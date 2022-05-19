@@ -1,0 +1,11 @@
+__pycache__
+/.idea
+/venv/
+*.egg-info
+/.eggs/
+/build/
+/dist/
+.env
+# setup.py # actually, commit the stub setup.py file so that users can pip3 install -e .
+.hypothesis/
+# /poetry.lock # actually, commit poetry.lock
