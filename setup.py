@@ -11,10 +11,13 @@ package_dir = \
 {'': 'src'}
 
 packages = \
-['npnd']
+['npnd', 'npnd._src', 'npnd._src.numpy', 'npnd.numpy', 'npnd.ops']
 
 package_data = \
 {'': ['*']}
+
+install_requires = \
+['pytreez>=1.4,<2.0']
 
 
 setup_kwargs = {
