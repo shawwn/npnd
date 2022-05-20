@@ -11,13 +11,13 @@ package_dir = \
 {'': 'src'}
 
 packages = \
-['npnd', 'npnd._src', 'npnd._src.numpy', 'npnd.numpy', 'npnd.ops']
+['npnd', 'npnd._src', 'npnd._src.numpy', 'npnd._src.ops', 'npnd.numpy']
 
 package_data = \
 {'': ['*']}
 
 install_requires = \
-['pytreez>=1.4,<2.0']
+['pytreez>=1.4']
 
 
 setup_kwargs = {
@@ -25,7 +25,7 @@ setup_kwargs = {
     'packages': packages,
     'package_data': package_data,
     'install_requires': install_requires,
-    'python_requires': '>=3.8,<4.0',
+    'python_requires': '>=3.8',
     **(globals().get('base_kwargs')),
 }
 

@@ -1,5 +1,5 @@
 import numpy as np
-from .. import errors
+from npnd import errors
 from .one_hot import one_hot
 
 def gather_nd(params, indices, batch_dims=0):
