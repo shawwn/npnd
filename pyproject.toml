@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "npnd"
-version = "0.1.0"
+version = "0.2.0"
 description = "Numpy n-dimensional ops (scatter, gather, one-hot, etc)"
 authors = ["Shawn Presser <shawnpresser@gmail.com>"]
 license = "MIT"
