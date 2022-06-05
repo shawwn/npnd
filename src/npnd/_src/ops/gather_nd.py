@@ -1,6 +1,10 @@
 import numpy as np
 from npnd import errors
 from .one_hot import one_hot
+from .tensorflow import state_ops
+
+def prn(*args, **kws):
+  print(*args, **kws)
 
 def gather_nd(params, indices, batch_dims=0):
   params = np.asarray(params)
@@ -20,26 +24,42 @@ def gather_nd(params, indices, batch_dims=0):
         "index innermost dimension length must be <= params rank; saw: ",
         slice_dim, " vs. ", np.ndim(params))
   outer_shape = indices.shape[:-1]
+  prn("outer_shape == ", outer_shape)
   inner_shape = params.shape[slice_dim:]
+  prn("inner_shape == ", inner_shape)
   result_shape = outer_shape + inner_shape
+  prn("result_shape == ", result_shape)
   # Calculate the number of elements that make up each slice of the
   # tensor.
   slice_size = int(np.prod(inner_shape)) # 1 if inner_shape is empty
+  prn("slice_size == ", slice_size)
   # Calculate the number of slices we'll be selecting.
   num_slices = int(np.prod(params.shape)) // slice_size
+  prn("num_slices == ", num_slices)
   # Reshape the incoming tensor into (num_slices, slice_size).
   params_mat = params.reshape((num_slices, slice_size))
+  prn("params_mat.shape == ", params_mat.shape)
   # Calculate the 1-dimensional indices necessary to select
   # the correct slices.
   strides_shape = params.shape[:slice_dim]
+  prn("strides_shape == ", strides_shape)
   strides = get_stride_sizes(strides_shape)
-  indices_mat = flat_inner_dims(indices)
-  indices_mat = (strides * indices_mat).sum(-1)
+  prn("strides == ", strides)
+  indices_mat0 = flat_inner_dims(indices)
+  prn("indices_mat0.shape == ", indices_mat0.shape)
+  indices_mat1 = (strides * indices_mat0)
+  prn("indices_mat1.shape == ", indices_mat1.shape)
+  indices_mat = indices_mat1.sum(-1)
+  prn("indices_mat.shape == ", indices_mat.shape)
   # Select the slices we want, via onehot-matmul.
   hot = one_hot(indices_mat, num_slices)
+  prn("hot.shape == ", hot.shape)
   result = hot @ params_mat
+  prn("result.shape == ", result.shape)
   # Reshape the result back to the expected shape.
-  return result.reshape(result_shape)
+  out = result.reshape(result_shape)
+  prn("out.shape == ", out.shape)
+  return out
 
 def gather_nd_generic(params, indices, batch_dims):
   # if params contains non-numbers, handle it specially, since it can't be multiplied
@@ -63,9 +83,7 @@ def gather_nd_batched(params, indices, batch_dims):
   assert index_depth <= np.ndim(params)
   inner_shape = params.shape[batch_dims + index_depth:]
   result_shape = batch_shape + outer_shape + inner_shape
-  # TODO: I'm only confident that the batch_dims==1 case works.
-  assert batch_dims == 1, "batch_dims > 1 not yet implemented"
-  batched_indices = add_batch_indices(indices)
+  batched_indices = add_batch_indices(params, indices, batch_dims)
   result = gather_nd(params, batched_indices, batch_dims=0)
   return result.reshape(result_shape)
 
@@ -100,14 +118,24 @@ def flat_inner_dims(tensor, num_out_dims = 2):
   shape = flat_inner_shape(tensor.shape, num_out_dims)
   return tensor.reshape(shape)
 
-def add_batch_indices(indices):
+def add_batch_indices_old(params, indices, batch_dims):
+  # TODO: I'm only confident that the batch_dims==1 case works.
+  # assert batch_dims == 1, "batch_dims > 1 not yet implemented"
   indices = np.asarray(indices)
   ind = np.arange(indices.shape[0])
   #ind = ind.reshape(indices.shape)
-  shape = (-1,) + tuple(1 for i in range(len(indices.shape) - 1))
-  ind = ind.reshape(shape)
+  # shape = (-1,) + tuple(1 for i in range(len(indices.shape) - 1))
+  # ind = ind.reshape(shape)
+  ind = np.expand_dims(ind, list(range(batch_dims, len(indices.shape))))
   ind = np.concatenate([ind, indices], -1)
   #ind = np.concatenate([indices[...,:-1], ind, indices[...,-1:]], -1)
-  ind = np.expand_dims(ind, -2)
+  # ind = np.expand_dims(ind, -2)
   return ind
 
+def add_batch_indices(params, indices, batch_dims):
+  # ind = state_ops.batch_scatter_indices(indices, batch_dims)
+  # ind = ind.squeeze(batch_dims)
+  ind = state_ops.batch_gather_nd_indices(indices, batch_dims)
+  return ind
+
+add_batch_indices = add_batch_indices_old
