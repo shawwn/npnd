@@ -66,25 +66,16 @@ def scatter_nd_slice_via_reduction(tensor, indices, updates, reduction=None):
 scatter_nd_slice = scatter_nd_slice_via_matmul
 
 def scatter_nd(tensor, indices, updates, reduction=None):
-  tensor = np.asarray(tensor)
-  indices = np.asarray(indices)
-  updates = np.asarray(updates)
-  assert np.ndim(indices) >= 2
+  tensor, indices, updates = check(tensor, indices, updates)
   index_depth = indices.shape[-1]
-  batch_shape = indices.shape[:-1]
-  assert index_depth <= np.ndim(tensor)
   outer_shape = tensor.shape[:index_depth]
-  inner_shape = tensor.shape[index_depth:]
-  assert updates.shape == batch_shape + inner_shape
-  if index_depth == 1:
-    return scatter_nd_slice(tensor, indices, updates, reduction=reduction)
-  stride_sizes = get_stride_sizes(outer_shape)
-  tensor_shape = (np.prod(outer_shape),) + inner_shape
-  indices = flat_inner_dims(indices)
-  updates = flat_inner_dims(updates)
-  lhs = (indices * stride_sizes).sum(-1)
-  rhs = tensor.reshape(tensor_shape)
-  lhs1 = np.expand_dims(lhs, -1)
-  out = scatter_nd_slice(rhs, lhs1, updates, reduction=reduction)
-  result = out.reshape(tensor.shape)
+  result_shape = tensor.shape
+  if index_depth > 1:
+    tensor = flat_inner_dims(tensor)
+    updates = flat_inner_dims(updates)
+    indices = flat_inner_dims(indices)
+    stride_sizes = get_stride_sizes(outer_shape)
+    indices = (indices * stride_sizes).sum(-1)
+  result = scatter_nd_slice(tensor, indices, updates, reduction=reduction)
+  result = result.reshape(result_shape)
   return result
