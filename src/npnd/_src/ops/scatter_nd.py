@@ -10,25 +10,6 @@ def maybe_squeeze(x, axis: int):
     x = np.squeeze(x, axis)
   return x
 
-
-def scatter_nd_slice(tensor, indices, updates, reduction=None):
-  tensor = np.asarray(tensor)
-  indices = np.asarray(indices)
-  updates = np.asarray(updates)
-  assert np.ndim(indices) >= 2
-  index_depth = indices.shape[-1]
-  batch_shape = indices.shape[:-1]
-  assert index_depth <= np.ndim(tensor)
-  outer_shape = tensor.shape[:index_depth]
-  inner_shape = tensor.shape[index_depth:]
-  assert updates.shape == batch_shape + inner_shape
-  hot = one_hot(indices.T, tensor.shape[0])
-  rhs = (updates.T @ hot).T
-  mask = 1 - ((np.ones_like(updates).T @ hot).T != 0)
-  rhs = maybe_squeeze(rhs, -1)
-  lhs = maybe_squeeze(lhs, -1)
-  return lhs * tensor + rhs
-
 def check(tensor, indices, updates):
   tensor = np.asarray(tensor)
   indices = np.asarray(indices)
@@ -54,8 +35,6 @@ def scatter_nd_slice_via_matmul(tensor, indices, updates, reduction=None):
   if reduction == 'mul':
     return tensor * (mask + rhs)
   return mask * tensor + rhs
-
-from . import broadcast as broadcast_lib
 
 def scatter_nd_slice_via_reduction(tensor, indices, updates, reduction=None):
   tensor, indices, updates = check(tensor, indices, updates)
@@ -85,24 +64,6 @@ def scatter_nd_slice_via_reduction(tensor, indices, updates, reduction=None):
   return mask * tensor + updates
 
 scatter_nd_slice = scatter_nd_slice_via_matmul
-
-# def scatter_nd_slice(tensor, indices, updates, reduction=None):
-#   tensor = np.asarray(tensor)
-#   indices = np.asarray(indices)
-#   updates = np.asarray(updates)
-#   hot = one_hot(indices.T, tensor.shape[0])
-#   rhs = (updates.T @ hot).T
-#   rhs = maybe_squeeze(rhs, -1)
-#   if reduction is None:
-#     return tensor + rhs
-#   if reduction == 'add':
-#     mask = (np.ones_like(updates).T @ hot).T
-#     mask = maybe_squeeze(mask, -1)
-#     mask = 1 - (mask != 0)
-#     tensor = mask * tensor
-#   elif reduction == 'mul':
-#     raise NotImplementedError
-#   return tensor + rhs
 
 def collapse(tensor, batch_shape):
   out = tensor.reshape((int(np.prod(batch_shape)),) + (tensor.shape[-1],))
