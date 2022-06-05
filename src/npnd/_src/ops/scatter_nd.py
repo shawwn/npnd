@@ -42,7 +42,7 @@ def check(tensor, indices, updates):
   assert updates.shape == batch_shape + inner_shape
   return tensor, indices, updates
 
-def scatter_nd_slice(tensor, indices, updates, reduction=None):
+def scatter_nd_slice_via_matmul(tensor, indices, updates, reduction=None):
   tensor, indices, updates = check(tensor, indices, updates)
   hot = one_hot(indices.T, tensor.shape[0])
   rhs = (updates.T @ hot).T
@@ -57,7 +57,7 @@ def scatter_nd_slice(tensor, indices, updates, reduction=None):
 
 from . import broadcast as broadcast_lib
 
-def scatter_nd_slice(tensor, indices, updates, reduction=None):
+def scatter_nd_slice_via_reduction(tensor, indices, updates, reduction=None):
   tensor, indices, updates = check(tensor, indices, updates)
   assert np.ndim(tensor) == 1
   # tensor.shape is [P]
@@ -83,6 +83,8 @@ def scatter_nd_slice(tensor, indices, updates, reduction=None):
   if reduction == 'mul':
     return tensor * (mask + updates)
   return mask * tensor + updates
+
+scatter_nd_slice = scatter_nd_slice_via_matmul
 
 # def scatter_nd_slice(tensor, indices, updates, reduction=None):
 #   tensor = np.asarray(tensor)
