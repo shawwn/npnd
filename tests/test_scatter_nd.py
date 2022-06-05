@@ -42,7 +42,6 @@ def check_scatter_nd(params, indices, updates, reduction=None, output=None, outp
 
 # The below Scatter's numpy implementation is from https://stackoverflow.com/a/46204790/11767360
 def scatter_ref(data, indices, updates, axis=0, reduction=None):  # type: ignore
-    assert reduction == None
     if axis < 0:
         axis = data.ndim + axis
 
@@ -72,7 +71,14 @@ def scatter_ref(data, indices, updates, axis=0, reduction=None):  # type: ignore
     updates_idx.insert(axis, np.repeat(np.arange(indices.shape[axis]), np.prod(idx_xsection_shape)))
 
     scattered = np.copy(data)
-    scattered[tuple(idx)] = updates[tuple(updates_idx)]
+    if reduction == 'add':
+      scattered[tuple(idx)] += updates[tuple(updates_idx)]
+    elif reduction == 'mul':
+      scattered[tuple(idx)] *= updates[tuple(updates_idx)]
+    elif reduction is None:
+      scattered[tuple(idx)] = updates[tuple(updates_idx)]
+    else:
+      raise ValueError("Unknown reduction type")
     return scattered
 
 # verify scatter matches reference implementation.
@@ -212,7 +218,7 @@ class ScatterTestCase(ntu.TestCase):
         #   [0.0, 2.1, 1.2],
         # ],
         reduction = reduction
-      ) for reduction in [None] #, 'add', 'mul']
+      ) for reduction in [None, 'add', 'mul']
     ],
     *[
       ntu.param(
@@ -227,7 +233,7 @@ class ScatterTestCase(ntu.TestCase):
         #   [0.0, 2.1, 1.2],
         # ],
         reduction = reduction
-      ) for reduction in [None] #, 'add', 'mul']
+      ) for reduction in [None, 'add', 'mul']
     ],
   ])
   def test_scatter(self, *args, **kws):
