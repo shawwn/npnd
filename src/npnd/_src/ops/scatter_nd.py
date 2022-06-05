@@ -1,7 +1,7 @@
 import numpy as np
 
 from .one_hot import one_hot
-from .gather_nd import get_stride_sizes
+from .gather_nd import get_stride_sizes, flat_inner_dims
 
 # like np.squeeze, but doesn't error if size != 1.
 def maybe_squeeze(x, axis: int):
@@ -65,11 +65,6 @@ def scatter_nd_slice_via_reduction(tensor, indices, updates, reduction=None):
 
 scatter_nd_slice = scatter_nd_slice_via_matmul
 
-def collapse(tensor, batch_shape):
-  out = tensor.reshape((int(np.prod(batch_shape)),) + (tensor.shape[-1],))
-  result = maybe_squeeze(out, -1)
-  return result
-
 def scatter_nd(tensor, indices, updates, reduction=None):
   tensor = np.asarray(tensor)
   indices = np.asarray(indices)
@@ -85,11 +80,11 @@ def scatter_nd(tensor, indices, updates, reduction=None):
     return scatter_nd_slice(tensor, indices, updates, reduction=reduction)
   stride_sizes = get_stride_sizes(outer_shape)
   tensor_shape = (np.prod(outer_shape),) + inner_shape
-  ind = collapse(indices, batch_shape)
-  lhs = (ind * stride_sizes).sum(-1)
+  indices = flat_inner_dims(indices)
+  updates = flat_inner_dims(updates)
+  lhs = (indices * stride_sizes).sum(-1)
   rhs = tensor.reshape(tensor_shape)
-  upd = collapse(updates, batch_shape)
   lhs1 = np.expand_dims(lhs, -1)
-  out = scatter_nd_slice(rhs, lhs1, upd, reduction=reduction)
+  out = scatter_nd_slice(rhs, lhs1, updates, reduction=reduction)
   result = out.reshape(tensor.shape)
   return result

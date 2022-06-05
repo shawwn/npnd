@@ -92,7 +92,7 @@ def get_stride_sizes(shape):
   dims_to_count = []
   for dim in shape:
     remain_flat_size //= dim
-    dims_to_count += [remain_flat_size]
+    dims_to_count.append(remain_flat_size)
   return dims_to_count
 
 def flat_inner_shape(shape, num_out_dims = 2):
