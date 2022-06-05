@@ -83,9 +83,9 @@ def scatter_ref(data, indices, updates, axis=0, reduction=None):  # type: ignore
 
 # verify scatter matches reference implementation.
 def check_scatter(params, indices, updates, axis=0, reduction=None, output=None, output_shape=None, desc=None):
-  params = np.asarray(params).astype(np.float)
+  params = np.asarray(params).astype(float)
   indices = np.asarray(indices).astype(np.int64)
-  updates = np.asarray(updates).astype(np.float)
+  updates = np.asarray(updates).astype(float)
   y = scatter(params, indices, updates, axis=axis, reduction=reduction)
   if output_shape is not None:
     x = np.asarray(output_shape)

@@ -59,8 +59,12 @@ from . import broadcast as broadcast_lib
 
 def scatter_nd_slice(tensor, indices, updates, reduction=None):
   tensor, indices, updates = check(tensor, indices, updates)
+  assert np.ndim(tensor) == 1
   # tensor.shape is [P]
+  assert np.ndim(indices) == 2
+  assert indices.shape[1] == 1
   # indices.shape is [N,1]
+  assert np.ndim(updates) == 1
   # updates.shape is [N]
   hot = one_hot(indices.T, tensor.shape[0])
   # hot.shape is [1, N, P]
