@@ -113,6 +113,11 @@ assert flat_inner_shape((4,4,4), 3) == (4, 4, 4)
 assert flat_inner_shape((4,4,4), 4) == (1, 4, 4, 4)
 assert flat_inner_shape((4,4,4), 5) == (1, 1, 4, 4, 4)
 
+assert flat_inner_shape((4,)) == (1, 4)
+assert flat_inner_shape((4,), 1) == (4,)
+assert flat_inner_shape((4,), 2) == (1, 4)
+assert flat_inner_shape((4,), 3) == (1, 1, 4)
+
 def flat_inner_dims(tensor, num_out_dims = 2):
   tensor = np.asarray(tensor)
   shape = flat_inner_shape(tensor.shape, num_out_dims)

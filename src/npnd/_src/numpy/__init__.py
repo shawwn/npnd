@@ -11,4 +11,4 @@ def values(shape):
   return np.arange(np.prod(shape)).reshape(shape)
 
 def values_like(x):
-  return values(np.asarray(x).shape)
+  return values(np.shape(x))

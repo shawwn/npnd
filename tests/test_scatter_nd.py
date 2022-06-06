@@ -12,9 +12,9 @@ import inspect
 
 def scatter_nd_ref(original, indices, values, reduction=None):
   assert reduction in [None, 'add', 'mul'], "Unknown reduction type"
-  original = np.asarray(original)
-  indices = np.asarray(indices)
-  values = np.asarray(values)
+  original = np.asarray(original).astype(float)
+  indices = np.asarray(indices).astype(np.int64)
+  values = np.asarray(values).astype(float)
   output = np.copy(original)
   update_indices = indices.shape[:-1]
   for idx in np.ndindex(update_indices):
@@ -199,9 +199,60 @@ class ScatterNdTestCase(ntu.TestCase):
         reduction = reduction,
       ) for reduction in [None, 'add', 'mul']
     ],
+    *[
+      ntu.param(
+        desc = "tensor_scatter_nd_update scalar updates",
+        params = nnp.values_like([0, 0, 0, 0, 0, 0, 0, 0]),
+        indices = [[1], [3], [4], [7]],
+        updates = [9, 10, 11, 12],
+        reduction = reduction,
+      ) for reduction in [None, 'add', 'mul']
+    ],
+    *[
+      ntu.param(
+        desc = "tensor_scatter_nd_update scalar updates #2",
+        params = nnp.values_like([[1, 1], [1, 1], [1, 1]]),
+        indices = [[0, 1], [2, 0]],
+        updates = [5, 10],
+        reduction = reduction,
+      ) for reduction in [None, 'add', 'mul']
+    ],
+    *[
+      ntu.param(
+        desc = "tensor_scatter_nd_update slice updates #1",
+        params = nnp.values((6, 3)),
+        indices = [[2], [4]],
+        updates = [[1, 2, 3], [4, 5, 6]],
+        reduction = reduction,
+      ) for reduction in [None, 'add', 'mul']
+    ],
+    *[
+      ntu.param(
+        desc = "tensor_scatter_nd_update More slice update examples #1",
+        params = nnp.values((13,11,7,5,3)),
+        indices = [[0],[1]],
+        updates = nnp.values((2, 11,7,5,3)),
+        reduction = reduction,
+      ) for reduction in [None, 'add', 'mul']
+    ],
   ])
   def test_scatter_nd(self, *args, **kws):
     check_scatter_nd(*args, **kws)
+
+  # https://www.tensorflow.org/api_docs/python/tf/tensor_scatter_nd_update#more_slice_update_examples_2
+  def test_scatter_nd_2(self):
+    batch_size, time, width, height, channels = 13,11,7,5,3
+    video_batch = nnp.values([batch_size, time, width, height, channels])
+    indices = [[0],[1]]
+    new_clips = nnp.values([2, time, width, height, channels])
+    for reduction in [None, 'add', 'mul']:
+      check_scatter_nd(video_batch, indices, new_clips, reduction=reduction)
+    indices = [[0, 0], [1, 0], [2, 0]] # num_updates=3, index_depth=2
+    new_images = np.ones([
+      # num_updates=3, inner_shape=(width, height, channels)
+      3, width, height, channels])
+    for reduction in [None, 'add', 'mul']:
+      check_scatter_nd(video_batch, indices, new_images, reduction=reduction)
 
 class ScatterTestCase(ntu.TestCase):
 
