@@ -121,21 +121,22 @@ def scatter_nd(tensor, indices, updates, reduction=None):
     return scatter_nd_slice(tensor, indices, updates, reduction=reduction)
   stride_sizes = get_stride_sizes(outer_shape)
   tensor_shape = (np.prod(outer_shape),) + ((np.prod(inner_shape),) if inner_shape else ())
-  ind = collapse(indices, batch_shape)
-  lhs = (ind * stride_sizes).sum(-1)
-  rhs = tensor.reshape(tensor_shape)
-  upd = collapse(updates, batch_shape)
+  tensor_flat = tensor.reshape(tensor_shape)
+  indices_flat = collapse(indices, batch_shape)
+  indices_flat = (indices_flat * stride_sizes).sum(-1)
+  updates_flat = collapse(updates, batch_shape)
   if reduction is None:
     # handle duplicate indices
-    assert np.ndim(lhs) == 1
-    duplicate_mask = np.tril(lhs[:, None] == lhs[None, :], -1).sum(0)
+    assert np.ndim(indices_flat) == 1
+    duplicate_mask = indices_flat[:, None] == indices_flat[None, :]
+    duplicate_mask = np.tril(duplicate_mask, -1).sum(0)
     duplicate_mask = duplicate_mask == 0
     # if np.any(duplicate_mask):
     #   breakpoint()
-    while np.ndim(duplicate_mask) < np.ndim(upd):
+    while np.ndim(duplicate_mask) < np.ndim(updates_flat):
       duplicate_mask = np.expand_dims(duplicate_mask, -1)
-    upd = duplicate_mask * upd
-  lhs1 = np.expand_dims(lhs, -1)
-  out = scatter_nd_slice(rhs, lhs1, upd, reduction=reduction)
-  result = out.reshape(tensor.shape)
+    updates_flat = duplicate_mask * updates_flat
+  indices_flat = np.expand_dims(indices_flat, -1)
+  result = scatter_nd_slice(tensor_flat, indices_flat, updates_flat, reduction=reduction)
+  result = result.reshape(tensor.shape)
   return result
