@@ -11,9 +11,9 @@ def maybe_squeeze(x, axis: int):
   return x
 
 def check(tensor, indices, updates):
-  tensor = np.asarray(tensor)
-  indices = np.asarray(indices)
-  updates = np.asarray(updates)
+  tensor = np.asarray(tensor).astype(float)
+  indices = np.asarray(indices).astype(np.int64)
+  updates = np.asarray(updates).astype(float)
   assert np.ndim(indices) >= 2
   index_depth = indices.shape[-1]
   batch_shape = indices.shape[:-1]
@@ -27,12 +27,23 @@ def scatter_nd_slice_via_matmul(tensor, indices, updates, reduction=None):
   tensor, indices, updates = check(tensor, indices, updates)
   print('')
   print('scatter_nd_slice_via_matmul  ', tensor.shape, indices.shape, updates.shape, reduction)
-  indices = one_hot(indices.T, tensor.shape[0])
+  hot = one_hot(indices.T, tensor.shape[0])
   print('scatter_nd_slice_via_matmul 2', tensor.shape, indices.shape, updates.shape, reduction)
-  mask = (np.ones_like(updates).T @ indices).T
+  mask = (np.ones_like(updates).T @ hot).T
   mask = (mask == 0)
   mask = maybe_squeeze(mask, -1)
-  updates = (updates.T @ indices).T
+  # mask2 = (1.0 - hot).prod(-2).astype(bool)
+  # mask2 = maybe_squeeze(mask2, -2)
+  # mask2 = mask2.reshape(mask2.shape + tuple(1 for _ in range(len(tensor.shape) - 1)))
+  # mask = mask2
+  # if not np.array_equal(mask, mask2):
+  #   breakpoint()
+  # dupes = np.any(hot.prod(-2) > 0)
+  # if dupes:
+  #   breakpoint()
+  # if reduction == 'mul':
+  #   breakpoint()
+  updates = (updates.T @ hot).T
   print('scatter_nd_slice_via_matmul 3', tensor.shape, indices.shape, updates.shape, reduction)
   updates = maybe_squeeze(updates, -1)
   print('scatter_nd_slice_via_matmul 4', tensor.shape, indices.shape, updates.shape, reduction)
@@ -114,6 +125,16 @@ def scatter_nd(tensor, indices, updates, reduction=None):
   lhs = (ind * stride_sizes).sum(-1)
   rhs = tensor.reshape(tensor_shape)
   upd = collapse(updates, batch_shape)
+  if reduction is None:
+    # handle duplicate indices
+    assert np.ndim(lhs) == 1
+    duplicate_mask = np.tril(lhs[:, None] == lhs[None, :], -1).sum(0)
+    duplicate_mask = duplicate_mask == 0
+    # if np.any(duplicate_mask):
+    #   breakpoint()
+    while np.ndim(duplicate_mask) < np.ndim(upd):
+      duplicate_mask = np.expand_dims(duplicate_mask, -1)
+    upd = duplicate_mask * upd
   lhs1 = np.expand_dims(lhs, -1)
   out = scatter_nd_slice(rhs, lhs1, upd, reduction=reduction)
   result = out.reshape(tensor.shape)

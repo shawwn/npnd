@@ -27,7 +27,9 @@ def scatter_nd_ref(original, indices, values, reduction=None):
   return output
 
 # verify scatternd matches reference implementation.
-def check_scatter_nd(params, indices, updates, reduction=None, output=None, output_shape=None, desc=None):
+def check_scatter_nd(params, indices, updates, reduction=None, output=None, output_shape=None, desc=None, debug=False):
+  if debug:
+    breakpoint()
   y = scatter_nd(params, indices, updates, reduction=reduction)
   if output_shape is not None:
     x = np.asarray(output_shape)
@@ -58,6 +60,12 @@ def scatter_ref(data, indices, updates, axis=0, reduction=None):  # type: ignore
             unpacked = unpacked, packed[i]
         return unpacked
 
+    def make_indices_for_duplicate(idx):  # type: ignore
+        final_idx = list()
+        for i in range(len(idx[0])):
+            final_idx.append(tuple(idx_element[i] for idx_element in idx))
+        return list(final_idx)
+
     # We use indices and axis parameters to create idx
     # idx is in a form that can be used as a NumPy advanced indices for scattering of updates param. in data
     idx = [[unpack(np.indices(idx_xsection_shape).reshape(indices.ndim - 1, -1)),
@@ -71,15 +79,67 @@ def scatter_ref(data, indices, updates, axis=0, reduction=None):  # type: ignore
     updates_idx.insert(axis, np.repeat(np.arange(indices.shape[axis]), np.prod(idx_xsection_shape)))
 
     scattered = np.copy(data)
-    if reduction == 'add':
-      scattered[tuple(idx)] += updates[tuple(updates_idx)]
-    elif reduction == 'mul':
-      scattered[tuple(idx)] *= updates[tuple(updates_idx)]
-    elif reduction is None:
-      scattered[tuple(idx)] = updates[tuple(updates_idx)]
+    if reduction is None:
+        scattered[tuple(idx)] = updates[tuple(updates_idx)]
     else:
-      raise ValueError("Unknown reduction type")
+        idx, updates_idx = make_indices_for_duplicate(idx), make_indices_for_duplicate(updates_idx)
+        for iter, idx_set in enumerate(idx):
+            if reduction == 'add':
+                scattered[idx_set] += updates[updates_idx[iter]]
+            elif reduction == 'mul':
+                scattered[idx_set] *= updates[updates_idx[iter]]
+            else:
+                raise ValueError("Unknown reduction type")
     return scattered
+
+# The below ScatterElements' numpy implementation is from https://stackoverflow.com/a/46204790/11767360
+def scatter_elements_ref(data, indices, updates, axis=0, reduction='none'):  # type: ignore
+    if axis < 0:
+        axis = data.ndim + axis
+
+    idx_xsection_shape = indices.shape[:axis] + indices.shape[axis + 1:]
+
+    def make_slice(arr, axis, i):  # type: ignore
+        slc = [slice(None)] * arr.ndim
+        slc[axis] = i
+        return slc
+
+    def unpack(packed):  # type: ignore
+        unpacked = packed[0]
+        for i in range(1, len(packed)):
+            unpacked = unpacked, packed[i]
+        return unpacked
+
+    def make_indices_for_duplicate(idx):  # type: ignore
+        final_idx = list()
+        for i in range(len(idx[0])):
+            final_idx.append(tuple(idx_element[i] for idx_element in idx))
+        return list(final_idx)
+
+    # We use indices and axis parameters to create idx
+    # idx is in a form that can be used as a NumPy advanced indices for scattering of updates param. in data
+    idx = [[unpack(np.indices(idx_xsection_shape).reshape(indices.ndim - 1, -1)),
+            indices[tuple(make_slice(indices, axis, i))].reshape(1, -1)[0]] for i in range(indices.shape[axis])]
+    idx = list(np.concatenate(idx, axis=1))
+    idx.insert(axis, idx.pop())
+
+    # updates_idx is a NumPy advanced indices for indexing of elements in the updates
+    updates_idx = list(idx)
+    updates_idx.pop(axis)
+    updates_idx.insert(axis, np.repeat(np.arange(indices.shape[axis]), np.prod(idx_xsection_shape)))
+
+    scattered = np.copy(data)
+    if reduction == 'none':
+        scattered[tuple(idx)] = updates[tuple(updates_idx)]
+    else:
+        idx, updates_idx = make_indices_for_duplicate(idx), make_indices_for_duplicate(updates_idx)
+        for iter, idx_set in enumerate(idx):
+            if reduction == 'add':
+                scattered[idx_set] += updates[updates_idx[iter]]
+            elif reduction == 'mul':
+                scattered[idx_set] *= updates[updates_idx[iter]]
+    return scattered
+
 
 # verify scatter matches reference implementation.
 def check_scatter(params, indices, updates, axis=0, reduction=None, output=None, output_shape=None, desc=None, debug=False):
@@ -96,6 +156,7 @@ def check_scatter(params, indices, updates, axis=0, reduction=None, output=None,
     x = np.asarray(output)
   else:
     x = scatter_ref(params, indices, updates, axis=axis, reduction=reduction)
+    # x = scatter_elements_ref(params, indices, updates, axis=axis, reduction=reduction)
   ntu.check_eq(x, y)
   return y
 
@@ -235,6 +296,37 @@ class ScatterNdTestCase(ntu.TestCase):
         reduction = reduction,
       ) for reduction in [None, 'add', 'mul']
     ],
+    *[
+      ntu.param(
+        desc = "tensor_scatter_nd_update More slice update examples (drawing an X)",
+        params = nnp.values((5,5)),
+        indices = [
+          [[0,0],
+           [1,1],
+           [2,2],
+           [3,3],
+           [4,4]],
+          [[0,4],
+           [1,3],
+           [2,2],
+           [3,1],
+           [4,0]],
+          [[3,0],
+           [1,0],
+           [2,0],
+           [0,0],
+           [4,0]],
+        ],
+        updates = nnp.values_like([
+          [1,1,1,1,1],
+          [1,1,1,1,1],
+          [1,1,1,1,1],
+        ]) + 1,
+        reduction = reduction,
+        # debug=True,
+      ) for reduction in [None, 'add']
+      # ) for reduction in [None, 'add', 'mul']
+    ],
   ])
   def test_scatter_nd(self, *args, **kws):
     check_scatter_nd(*args, **kws)
@@ -253,6 +345,54 @@ class ScatterNdTestCase(ntu.TestCase):
       3, width, height, channels])
     for reduction in [None, 'add', 'mul']:
       check_scatter_nd(video_batch, indices, new_images, reduction=reduction)
+
+  def test_scatter_nd_3(self):
+    tensor = nnp.values((5,5))
+    # indices = [
+    #   [[0,0],
+    #    [1,1],
+    #    [2,2],
+    #    [3,3],
+    #    [4,4]],
+    #   [[0,4],
+    #    [1,3],
+    #    [2,2],
+    #    [3,1],
+    #    [4,0]],
+    # ]
+    indices = [
+      [[0,0],
+       [1,1],
+       [2,2],
+       [3,3],
+       [4,4]],
+      [[0,4],
+       [1,3],
+       [2,2],
+       [3,1],
+       [4,0]],
+      [[3,0],
+       [1,0],
+       [2,0],
+       [0,0],
+       [4,0]],
+      [[0,3],
+       [0,1],
+       [0,2],
+       [0,0],
+       [0,4]],
+    ]
+    updates = nnp.values_like([
+      [1,1,1,1,1],
+      [1,1,1,1,1],
+      [1,1,1,1,1],
+      [1,1,1,1,1],
+    ]) + 1
+    # for reduction in [None, 'add']:#, 'mul']:
+    for reduction in [None]:#, 'mul']:
+      check_scatter_nd(tensor, indices, updates, reduction=reduction)
+
+
 
 class ScatterTestCase(ntu.TestCase):
 
@@ -312,6 +452,7 @@ class ScatterTestCase(ntu.TestCase):
         axis = 1,
         output = [[1., 5.2, 3., 4., 5.]] if reduction == 'add' else [[1., 6.4, 3., 4., 5.]],
         reduction = reduction,
+        # debug=True,
       ) for reduction in ['add', 'mul']
     ],
     *[
