@@ -51,3 +51,11 @@ def broadcast_dim(v1, v2):
     else:
       # This dimension of the two operand types is incompatible.
       raise ValueError(f"Can't broadcast dimension of size {v1} to a dimension of size {v2}")
+
+# https://www.tensorflow.org/xla/operation_semantics#broadcastindim
+# https://www.tensorflow.org/xla/broadcasting
+def broadcast_in_dim(operand, shape, broadcast_dimensions):
+  in_reshape = np.ones(len(shape), dtype=np.int32)
+  for i, bd in enumerate(broadcast_dimensions):
+    in_reshape[bd] = operand.shape[i]
+  return broadcast_to(np.reshape(operand, in_reshape), shape)
