@@ -83,6 +83,8 @@ def tolerance(dtype, tol=None):
     return tol
   tol = {np.dtype(key): value for key, value in tol.items()}
   dtype = _dtypes.canonicalize_dtype(np.dtype(dtype))
+  if dtype.name.startswith('str'):
+    return 0
   return tol.get(dtype, default_tolerance()[dtype])
 
 def _normalize_tolerance(tol):
@@ -110,7 +112,7 @@ def _assert_numpy_close(a, b, atol=None, rtol=None, err_msg=''):
 
 
 def check_eq(xs, ys, err_msg=''):
-  assert_close = partial(_assert_numpy_allclose, err_msg=err_msg)
+  assert_close = partial(_assert_numpy_close, err_msg=err_msg)
   tree_all(tree_multimap(assert_close, xs, ys))
 
 def check_close(xs, ys, atol=None, rtol=None, err_msg=''):
