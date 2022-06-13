@@ -380,3 +380,22 @@ config.define_enum_state(
     help=('Specify bit width of default dtypes, either 32-bit or 64-bit. '
           'This is a temporary flag that will be used during the process '
           'of deprecating the ``npnd_enable_x64`` flag.'))
+
+# def _update_x64_global(val):
+#   lib.jax_jit.global_state().enable_x64 = val
+#
+# def _update_x64_thread_local(val):
+#   lib.jax_jit.thread_local_state().enable_x64 = val
+
+enable_x64 = config.define_bool_state(
+    name='npnd_enable_x64',
+    default=False,
+    help='Enable 64-bit types to be used',
+    # update_global_hook=_update_x64_global,
+    # update_thread_local_hook=_update_x64_thread_local
+)
+
+# TODO(phawkins): remove after fixing users of FLAGS.x64_enabled.
+config._contextmanager_flags.remove("npnd_enable_x64")
+
+Config.x64_enabled = Config.npnd_enable_x64  # type: ignore
