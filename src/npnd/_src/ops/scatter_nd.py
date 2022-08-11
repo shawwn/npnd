@@ -14,12 +14,17 @@ def scatter_nd_ref(original, indices, values, reduction=None):
   output = np.copy(original)
   update_indices = indices.shape[:-1]
   for idx in reversed(shape_lib.ndindex(update_indices)):
+    dst = tuple(indices[idx])
     if reduction is None:
-      output[tuple(indices[idx])] = values[idx]
+      output[dst] = values[idx]
     elif reduction == 'add':
-      output[tuple(indices[idx])] += values[idx]
+      output[dst] += values[idx]
     elif reduction in ['mul', 'multiply']:
-      output[tuple(indices[idx])] *= values[idx]
+      output[dst] *= values[idx]
+    elif reduction == 'min':
+      output[dst] = np.minimum(output[dst], values[idx])
+    elif reduction == 'max':
+      output[dst] = np.maximum(output[dst], values[idx])
     else:
       raise ValueError(f"Unknown reduction {reduction!r}")
   return output
@@ -153,7 +158,53 @@ def scatter_nd_slice_via_reduction0(tensor, indices, updates, reduction=None):
   updates = updates.reshape(tensor.shape)
   return blend(mask, tensor, updates, reduction)
 
+def uniqify(tensor, hot, indices, updates):
+  assert np.ndim(hot) == 2
+  # dupes = hot.cumsum(1) >= 2
+  # hot = np.where(dupes, 0, hot)
+  dedup = hot.cumsum(1) < 2
+  dedup = dedup.astype(hot.dtype)
+  hot = dedup * hot
+  blanks = hot.sum(0)
+  blanks = np.expand_dims(blanks, -1)
+  updates = blanks * updates
+  return tensor, hot, updates
+
 def scatter_nd_slice_via_reduction(tensor, indices, updates, reduction=None):
+  # tensor, indices, updates = check(tensor, indices, updates)
+  tensor = np.asarray(tensor).astype(float)
+  indices = np.asarray(indices).astype(int)
+  updates = np.asarray(updates).astype(float)
+  hot = one_hot_lib.one_hot(indices, tensor.shape[0], axis=0)
+  if reduction is None:
+    tensor, hot, updates = uniqify(tensor, hot, indices, updates)
+  hot = np.expand_dims(hot, -1)
+  updates = np.expand_dims(updates, 0)
+  updates = hot * updates
+  if reduction is None:
+    updates = updates.sum(1)
+    mask = hot.sum(1)
+    # mask = (mask == 0)
+    mask = 1 - mask
+    mask = mask.astype(hot.dtype)
+    return mask * tensor + updates
+  elif reduction == 'add':
+    updates = updates.sum(1)
+    return tensor + updates
+  if reduction in ['mul', 'multiply']:
+    updates = updates + (1 - hot)
+    updates = updates.prod(1)
+    return tensor * updates
+  elif reduction == 'min':
+    updates = np.where(hot, updates, float('inf'))
+    updates = updates.min(1)
+    return np.minimum(tensor, updates)
+  elif reduction == 'max':
+    updates = np.where(hot, updates, -float('inf'))
+    updates = updates.max(1)
+    return np.maximum(tensor, updates)
+
+def scatter_nd_slice_via_reduction_fast(tensor, indices, updates, reduction=None):
   tensor, indices, updates = check(tensor, indices, updates)
   hot = one_hot_lib.one_hot(indices.T, tensor.shape[0])
   if reduction is None:
@@ -176,13 +227,6 @@ def scatter_nd_slice_via_reduction(tensor, indices, updates, reduction=None):
     blanks = (counts == 0).astype(hot.dtype)
     updates = updates + (1 - hot) * (1 - blanks)
     updates = updates.prod(0)
-    if False:
-      # updates = tf.where(tf.math.is_inf(updates), tf.cast(1, updates.dtype), updates)
-      inf = tf.cast(float('inf'), updates.dtype)
-      ninf = tf.cast(-float('inf'), updates.dtype)
-      updates = tf.where(updates == inf, tf.cast(1, updates.dtype), updates)
-      updates = tf.where(updates == ninf, tf.cast(1, updates.dtype), updates)
-      updates = tf.where(updates != updates, tf.cast(1, updates.dtype), updates)
   else:
     updates = updates.sum(0)
   updates = updates.T
@@ -235,14 +279,17 @@ def scatter_nd(tensor, indices, updates, reduction=None):
   outer_shape = tensor.shape[:index_depth]
   inner_shape = tensor.shape[index_depth:]
   assert updates.shape == batch_shape + inner_shape
-  tensor_shape = (math.prod(outer_shape),) + ((math.prod(inner_shape),) if inner_shape else ())
-  updates_shape = (math.prod(batch_shape),) + ((math.prod(inner_shape),) if inner_shape else ())
+  # tensor_shape = (math.prod(outer_shape),) + ((math.prod(inner_shape),) if inner_shape else ())
+  # updates_shape = (math.prod(batch_shape),) + ((math.prod(inner_shape),) if inner_shape else ())
+  tensor_shape = (math.prod(outer_shape),) + (math.prod(inner_shape),)
+  updates_shape = (math.prod(batch_shape),) + (math.prod(inner_shape),)
   indices_shape = (math.prod(batch_shape),) + (index_depth,)
   tensor_flat = tensor.reshape(tensor_shape)
   updates_flat = updates.reshape(updates_shape)
   indices_flat = indices.reshape(indices_shape)
   stride_sizes = shape_lib.get_stride_sizes(outer_shape)
-  indices_flat = (indices_flat * stride_sizes).sum(-1, keepdims=True)
+  # indices_flat = (indices_flat * stride_sizes).sum(-1, keepdims=True)
+  indices_flat = (indices_flat * stride_sizes).sum(-1)
   result = scatter_nd_slice(tensor_flat, indices_flat, updates_flat, reduction=reduction)
   result = result.reshape(tensor.shape)
   result = result.astype(tensor.dtype)

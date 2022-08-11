@@ -1,32 +1,33 @@
 import numpy as np
 
-from .tensorflow import state_ops
 from . import gather_nd
 from . import scatter_nd
-
-def _nd_indices(indices):
-  indices = np.asarray(indices)
-  return state_ops.batch_scatter_update_indices(np.expand_dims(indices, -1))[..., 1:].squeeze(-2)[..., ::-1]
-
-def _nd_indices(indices, axis=0):
-  indices = np.asarray(indices)
-  return state_ops.batch_scatter_indices(indices, axis=axis)
-
-def _nd_flat_indices(indices, axis=0):
-  indices = np.asarray(indices)
-  ind = _nd_indices(indices, axis=axis)
-  strides = gather_nd.get_stride_sizes(ind.shape[:-1])
-  ind = strides * gather_nd.flat_inner_dims(ind)
-  ind = ind.sum(-1)
-  ind = ind[..., None]
-  return ind
+from . import shape as shape_lib
 
 def scatter(params, indices, updates, axis=0, reduction=None):
-  params = np.asarray(params)
-  indices = np.asarray(indices)
-  updates = np.asarray(updates)
-  # ind = _nd_indices(indices)
-  #indices_flat = (gather_nd.get_stride_sizes(ind.shape[:-1]) * gather_nd.flat_inner_dims(ind)).sum(-1)[..., None]
-  indices_flat = _nd_flat_indices(indices, axis=axis)
-  result = scatter_nd.scatter_nd(params.flat, indices_flat, updates.flat, reduction=reduction)
+  indices_nd = shape_lib.ndindices(indices, axis=axis)
+  result = scatter_nd.scatter_nd(params, indices_nd, updates, reduction=reduction)
   return result.reshape(params.shape)
+
+def scatter_ref(tensor, indices, updates, axis=0, reduction=None):
+  tensor = np.asarray(tensor).astype(float)
+  indices = np.asarray(indices).astype(np.int64)
+  updates = np.asarray(updates).astype(float)
+  out = np.copy(tensor)
+  for src in reversed(shape_lib.ndindex(indices.shape)):
+    dst = list(src)
+    dst[axis] = indices[src]
+    dst = tuple(dst)
+    if reduction is None:
+      out[dst] = updates[src]
+    elif reduction == 'add':
+      out[dst] += updates[src]
+    elif reduction in ['mul', 'multiply']:
+      out[dst] *= updates[src]
+    elif reduction == 'min':
+      out[dst] = np.minimum(out[dst], updates[src])
+    elif reduction == 'max':
+      out[dst] = np.maximum(out[dst], updates[src])
+    else:
+      raise ValueError(f"unknown reduction {reduction!r}")
+  return out

@@ -1,13 +1,178 @@
+from __future__ import annotations
 import numpy as np
 import math
+import string
 from dataclasses import dataclass
 from typing import Tuple, List, Union, Any, Optional, Dict
 
-import einsum as einsum_parser
-
 from . import one_hot as one_hot_lib
 
-def einsum_is_identity_spec(spec: einsum_parser.EinsumSpec):
+Shape = Tuple[int, ...]
+Idxs = List[int]
+IdxsMap = Dict[int,int]
+
+@dataclass
+class EinsumOutputSpec:
+
+    # tuple of dimensions (non-negative integers)
+    shape: Shape
+
+    # idxs is a list of integers in [0,52) representing letters and
+    # of consecutive negative integers from -1 and down representing an ellipsis
+    idxs: Idxs
+
+@dataclass
+class EinsumInputSpec:
+
+    # tuple of dimensions
+    shape: Shape
+
+    # idxs is a list of integers in [0,52) representing letters and
+    # of consecutive negative integers from -1 and down representing an ellipsis
+    idxs: Idxs
+
+@dataclass
+class EinsumSpec:
+
+    # idxs_map maps indices to dimensions, where an index
+    #   is an integer with [0,52) ranging over upper and lower case letters
+    #   (e.g. A and Z are 0 and 25, a and z are 26 and 51) and with
+    #   negative integers ranging over the indices of the ellipsis, if any
+    #   (-1 is the last index of the ellipsis, -2 is the second last, etc)
+    idxs_map: IdxsMap
+
+    # inputs is a non-empty list of instances of EinsumInputSpec
+    inputs: List[EinsumInputSpec]
+
+    # output is an instance of EinsumOutputSpec
+    output: EinsumOutputSpec
+
+EINSUM_LETTERS_LOWER = string.ascii_lowercase # a-z
+EINSUM_LETTERS_UPPER = string.ascii_uppercase # A-Z
+EINSUM_LETTERS = EINSUM_LETTERS_LOWER + EINSUM_LETTERS_UPPER # a-zA-Z
+
+def einsum_index(letter: str) -> int:
+    assert letter in EINSUM_LETTERS, \
+            "index '%s' (\\u%04X) is not a valid einsum letter" % (letter, ord(letter))
+    return EINSUM_LETTERS.index(letter)
+
+def einsum_letter(idx: int) -> str:
+    assert 0 <= idx < len(EINSUM_LETTERS)
+    return EINSUM_LETTERS[idx]
+
+def einsum_idxs(subscripts: str) -> Idxs:
+    return [ einsum_index(letter) for letter in subscripts ]
+
+def einsum_infer_output_subscripts(
+        idxs_map: IdxsMap,
+        ispecs: List[EinsumInputSpec]) -> str:
+    # count occurrences of letter indices in inputs
+    idxs_count = [0] * len(EINSUM_LETTERS)
+    for spec in ispecs:
+        for idx in spec.idxs:
+            if idx >= 0:
+                idxs_count[idx] += 1
+    subscripts = "..."
+    for idx in idxs_map:
+        if idxs_count[idx] == 1:
+            subscripts += einsum_letter(idx)
+    return subscripts
+
+def einsum_find_duplicate(letters: str) -> Optional[str]:
+    if len(letters) > 1:
+        s = sorted(letters)
+        for x in range(len(s) - 1):
+            if s[x] == s[x + 1]:
+                return s[x]
+    return None
+
+def einsum_ellipsis_idxs(idxs_map: IdxsMap) -> Idxs:
+    return sorted([ idx for idx in idxs_map if idx < 0 ])
+
+def einsum_output(
+        idxs_map: IdxsMap,
+        ispecs: List[EinsumInputSpec],
+        subscripts: Optional[str]) \
+        -> EinsumOutputSpec:
+    if subscripts is None:
+        subscripts = einsum_infer_output_subscripts(idxs_map, ispecs)
+        assert subscripts.startswith("...")
+        trailing = subscripts[len("..."):]
+        assert trailing.count(".") == trailing.count(" ") == 0
+        lst = ["", trailing]
+    else:
+        lst = [ s.replace(" ", "") for s in subscripts.split("...") ]
+        assert 1 <= len(lst) <= 2, f"multiple ellipses in '{subscripts}'"
+
+        # following torch and onnx, we don't require that the output has
+        # an ellipsis even if any appears in the inputs, whereas to follow
+        # numpy we'd require:
+        #
+        #   if einsum_ellipsis_idxs(idxs_map) != []: assert len(lst) == 2
+
+        duplicate = einsum_find_duplicate("".join(lst))
+        assert duplicate is None, f"duplicate index {duplicate} in '{subscripts}'"
+
+    idxs = [ einsum_index(letter) for letter in lst[0] ]
+    if len(lst) == 2:
+        idxs += einsum_ellipsis_idxs(idxs_map)
+        idxs += [ einsum_index(letter) for letter in lst[1] ]
+    assert [] == [ idx for idx in idxs if idx not in idxs_map ]
+
+    shape = tuple( idxs_map[idx] for idx in idxs )
+
+    return EinsumOutputSpec(shape, idxs)
+
+def einsum_input(subscripts: str, shape: Shape) -> EinsumInputSpec:
+    lst = [ s.replace(" ", "") for s in subscripts.split("...") ]
+    if len(lst) == 1:
+        assert len(lst[0]) == len(shape), \
+            f"# indices in '{subscripts}' != length of shape {list(shape)}"
+        lst.append("") # treat this case the same as an empty ellipsis at end
+    else:
+        assert len(lst) == 2, f"multiple ellipses in '{subscripts}'"
+        assert len(lst[0]) + len(lst[1]) <= len(shape), \
+            f"# indices in '{subscripts}' > length of shape {list(shape)}"
+    leading_idxs = einsum_idxs(lst[0])
+    trailing_idxs = einsum_idxs(lst[1])
+    letters_len = len(leading_idxs) + len(trailing_idxs)
+    ellipsis_len = len(shape) - len(leading_idxs) - len(trailing_idxs)
+    ellipsis_idxs = list(range(-ellipsis_len, 0))
+    idxs = leading_idxs + ellipsis_idxs + trailing_idxs
+    # following numpy and torch, don't broadcast-match the shapes of multiple
+    # occurrences of a subscript index within the same operand
+    for idx, dim in zip(idxs, shape):
+        assert dim == shape[idxs.index(idx)], \
+                f"operand has repeated subscript {einsum_letter(idx)} with different shape sizes"
+    return EinsumInputSpec(shape, idxs)
+
+def einsum_extend_idxs_map(idxs_map: IdxsMap, idx: int, n: int) -> IdxsMap:
+    old = idxs_map.get(idx)
+    if old is None or old == 1:
+        idxs_map[idx] = n
+    else:
+        assert n == 1 or n == old, f"cannot unify dimensions {old}, {n}"
+    return idxs_map
+
+def einsum_idxs_map(ispecs: List[EinsumInputSpec]) -> IdxsMap:
+    idxs_map: IdxsMap = {}
+    for spec in ispecs:
+        for idx, n in zip(spec.idxs, spec.shape):
+            einsum_extend_idxs_map(idxs_map, idx, n)
+    return idxs_map
+
+def einsum_spec(equation: str, ishapes: List[Shape]) -> EinsumSpec:
+    io = equation.split("->")
+    assert 1 <= len(io) <= 2, f"multiple arrows in '{equation}'"
+    osubscripts = io[1] if len(io) == 2 else None
+    isubscripts = io[0].split(",")
+    assert len(isubscripts) == len(ishapes), "# equation inputs != # input shapes"
+    ispecs = [ einsum_input(*p) for p in zip(isubscripts, ishapes) ]
+    idxs_map = einsum_idxs_map(ispecs)
+    ospec = einsum_output(idxs_map, ispecs, osubscripts)
+    return EinsumSpec(idxs_map, ispecs, ospec)
+
+def einsum_is_identity_spec(spec: EinsumSpec):
     if len(spec.inputs) != 1:
         return False
     if spec.inputs[0].idxs != spec.output.idxs:
@@ -24,21 +189,6 @@ def reduce_shape(ishape, axes):
         del oshape[a]
     return tuple(oshape)
 
-def make_constant_model(graph_name, output_name, tensor):
-    return np.asanyarray(tensor)
-    # constant_node = make_constant_node(output_name, tensor)
-    # return onnx.helper.make_model(
-    #     graph=onnx.helper.make_graph(
-    #         name=graph_name,
-    #         nodes=[constant_node],
-    #         inputs=[],
-    #         outputs=[param(output_name, tensor.dtype, tensor.shape)],
-    #     )
-    # )
-
-Shape = Tuple[int, ...]
-OnnxNode = Any
-
 def nonneg(pos, length: int):
     if isinstance(pos, int):
         assert -length <= pos < length
@@ -46,8 +196,10 @@ def nonneg(pos, length: int):
     return map(lambda p: nonneg(p, length), pos)
 
 def omit(seq, *positions):
+    seq = list(seq)
     for p in sorted(nonneg(positions, len(seq)), reverse=True):
-        seq = seq[:p] + seq[p+1:]
+        # seq = seq[:p] + seq[p+1:]
+        del seq[p]
     return seq
 
 def squeeze_shape(ishape, axes):
@@ -116,26 +268,6 @@ def reshape_shape(input_shape, output_shape):
     raise ValueError(f"Expected number of elements to be the same. {input_shape} {spec}")
   return output_shape
 
-# def make_constant_node(output_name, tensor) -> OnnxNode:
-#     tensor = np.asarray(tensor)
-#     return tensor
-#     # return onnx.helper.make_node(
-#     #     "Constant",
-#     #     inputs=[],
-#     #     outputs=[output_name],
-#     #     value=onnx.helper.make_tensor(
-#     #         name=output_name,
-#     #         data_type=onnx_type(tensor.dtype),
-#     #         dims=tensor.shape,
-#     #         vals=tensor.flatten(),
-#     #     ),
-#     # )
-#
-# def onnx_helper_make_node(name: str, inputs: List[str], outputs: List[str]):
-#         "Squeeze",
-#         inputs=[self.oname, axes_name],
-#         outputs=[squeeze_name],
-
 @dataclass
 class ValueInfo:
     name: str
@@ -143,14 +275,14 @@ class ValueInfo:
     dims: Shape
 
 @dataclass
-class Tensor:
+class TensorValue:
     name: str
     value: np.ndarray
 
     @classmethod
     def from_array(cls, value: np.ndarray, name: str):
         value = np.asanyarray(value)
-        return Tensor(name, value)
+        return TensorValue(name, value)
 
 @dataclass
 class Attribute:
@@ -174,7 +306,7 @@ class Node:
 @dataclass
 class Graph:
     name: str
-    initializer: List[Tensor]
+    initializer: List[TensorValue]
     node: List[Node]
     input: List[ValueInfo]
     output: List[ValueInfo]
@@ -197,11 +329,11 @@ class Graph:
 
 def make_graph(name: str, nodes: List[Node], inputs: List[str], outputs: List[str]):
     initializers = []
-    # initializers = [Tensor.from_array(node.value, node.output[0]) for node in nodes if node.op == 'Constant']
+    # initializers = [TensorValue.from_array(node.value, node.output[0]) for node in nodes if node.op == 'Constant']
     for node in nodes:
         if node.op_type == 'Constant':
             value = node.get_attribute_value('value')
-            assert isinstance(value, Tensor)
+            assert isinstance(value, TensorValue)
             initializers.append(value)
     # nodes = [node for node in nodes if node.op != 'Constant']
     return Graph(name, initializers, nodes, inputs, outputs)
@@ -210,19 +342,18 @@ def make_graph(name: str, nodes: List[Node], inputs: List[str], outputs: List[st
 class Model:
     graph: Graph
 
-    def run(self, *inputs):
-        return run_model(self, *inputs)
+    def run(self, inputs):
+        return run_model(self, inputs)
 
 def make_model(graph: Graph):
     return Model(graph)
 
 def make_tensor(name: str, value: np.ndarray):
-    return Tensor.from_array(value, name)
+    return TensorValue.from_array(value, name)
 
 def make_identity_node(input_name, output_name) -> Node:
     return make_node(
         "Identity",
-        output_name,
         inputs=[input_name],
         outputs=[output_name],
     )
@@ -239,7 +370,6 @@ def make_constant_model(graph_name: str, output_name: str, tensor):
         )
     )
 
-
 def make_tensor_value_info(name: str, dtype, shape: Shape):
     dtype = np.dtype(dtype)
     shape = tuple(shape)
@@ -254,12 +384,14 @@ def param(name: str, dtype, shape) -> ValueInfo:
 
 def make_constant_node(name: str, value: np.ndarray):
     value = np.asanyarray(value)
-    return make_node('Constant', name, inputs=[], outputs=[name], value=make_tensor(name, value))
+    return make_node('Constant', inputs=[], outputs=[name], value=make_tensor(name, value))
 
-def make_node(op_type: str, name: str, inputs: List[str], outputs: List[str], **attrs):
+def make_node(op_type: str, inputs: List[str], outputs: List[str], **attrs):
+    assert len(outputs) == 1
+    name = outputs[0]
     return Node(op_type, name=name, input=list(inputs), output=list(outputs), attribute=[Attribute(name, value) for name, value in attrs.items()])
 
-def _asarray(n: Tensor):
+def _asarray(n: TensorValue):
     return np.asanyarray(n.value)
 
 import functools
@@ -314,14 +446,14 @@ def onnx_reducesum(tensor, axis, keepdims):
     axis = tuple(np.asanyarray(axis).tolist())
     return [np.sum(tensor, axis, keepdims=keepdims)]
 
-def interpret_graph(graph: Graph, inputs):
+def interpret_graph(graph: Graph, inputs, *, verbose = False):
     vals = {node.name: value for node, value in zip(graph.input, inputs)}
     vals.update({n.name: _asarray(n) for n in graph.initializer})
     for op_index, node in enumerate(graph.node):
         args = list(vals[name] for name in node.input)
         attrs = {}
         for attr in node.attribute:
-            if isinstance(attr.value, Tensor):
+            if isinstance(attr.value, TensorValue):
                 attrs[attr.name] = attr.value.value
             elif isinstance(attr.value, (list, tuple)):
                 attrs[attr.name] = attr.value
@@ -329,18 +461,20 @@ def interpret_graph(graph: Graph, inputs):
                 attrs[attr.name] = attr.value
             else:
                 raise ValueError("Unknown attr type")
-        print(op_index, node.op_type, node.name, *map(np.shape, args), *((attrs,) if attrs else ()), end='\n  => ', flush=True)
+        if verbose:
+            print(op_index, node.op_type, node.name, *map(np.shape, args), *((attrs,) if attrs else ()), end='\n  => ', flush=True)
         if node.op_type not in onnx_ops:
             print('Unknown')
             breakpoint()
         outputs = onnx_ops[node.op_type](args, attrs)
-        print(*map(np.shape, outputs), [np.prod(np.shape(x)) for x in outputs])
+        if verbose:
+            print(*map(np.shape, outputs), [np.prod(np.shape(x)) for x in outputs])
         for name, output in zip(node.output, outputs):
             assert isinstance(output, (np.number, np.ndarray))
             vals[name] = output
     return [vals[node.name] for node in graph.output]
 
-def run_model(model: Model, *inputs):
+def run_model(model: Model, inputs):
     outputs = interpret_graph(model.graph, inputs)
     assert len(outputs) == 1
     return outputs[0]
@@ -388,16 +522,14 @@ class Transform:
         if tuple(oshape) == tuple(self.oshape):
             return self
         squeeze_name = self.next_name("squeeze")
-        if True:
-            axes_tensor = np.array(axes, dtype=np.int64)
-            axes_name = self.next_name("axes")
-            self.nodes.append(make_constant_node(axes_name, axes_tensor))
-            self.nodes.append(make_node(
-                "Squeeze",
-                squeeze_name,
-                inputs=[self.oname, axes_name],
-                outputs=[squeeze_name],
-            ))
+        axes_name = self.next_name("axes")
+        axes_tensor = np.array(axes, dtype=np.int64)
+        self.nodes.append(make_constant_node(axes_name, axes_tensor))
+        self.nodes.append(make_node(
+            "Squeeze",
+            inputs=[self.oname, axes_name],
+            outputs=[squeeze_name],
+        ))
         self.oname = squeeze_name
         self.oshape = oshape
         return self
@@ -406,13 +538,12 @@ class Transform:
         oshape = unsqueeze_shape(self.oshape, axes)
         if tuple(oshape) == tuple(self.oshape):
             return self
-        axes_tensor = np.array(axes, dtype=np.int64)
-        axes_name = self.next_name("axes")
-        self.nodes.append(make_constant_node(axes_name, axes_tensor))
         unsqueeze_name = self.next_name("unsqueeze")
+        axes_name = self.next_name("axes")
+        axes_tensor = np.array(axes, dtype=np.int64)
+        self.nodes.append(make_constant_node(axes_name, axes_tensor))
         self.nodes.append(make_node(
             "Unsqueeze",
-            unsqueeze_name,
             inputs=[self.oname, axes_name],
             outputs=[unsqueeze_name],
         ))
@@ -426,15 +557,20 @@ class Transform:
         assert dim == self.oshape[axis2]
         if dim != 1:
             ndim = len(self.oshape)
-            indices_shape = self.oshape[:axis1] + (1,) + self.oshape[axis1 + 1:]
+            # indices_shape = self.oshape[:axis1] + (1,) + self.oshape[axis1 + 1:]
+            # indices_shape = self.oshape[:axis1] + self.oshape[axis1 + 1:]
+            indices_shape = omit(self.oshape, axis1)
             arange = np.arange(dim)
             expanded = np.expand_dims(arange, tuple(range(1, ndim - axis2)))
             indices = np.broadcast_to(expanded, indices_shape)
             hot = one_hot_lib.one_hot(indices, dim, dtype=self.dtype, axis=axis1)
-            self.reshape(hot.shape)
+            assert self.oshape == hot.shape
+            # self.reshape(hot.shape)
             self.mul(self.const(hot))
             self.reducesum([axis1])
-            assert(tuple(self.oshape) == tuple(indices_shape))
+            assert tuple(self.oshape) == tuple(indices_shape)
+        else:
+            breakpoint()
         return self.squeeze([axis1])
 
     def reshape(self, shape):
@@ -442,16 +578,14 @@ class Transform:
         if tuple(oshape) == tuple(self.oshape):
             return self
         reshape_name = self.next_name("reshape")
-        if True:
-            shape_tensor = np.array(shape, dtype=np.int64)
-            shape_name = self.next_name("shape")
-            self.nodes.append(make_constant_node(shape_name, shape_tensor))
-            self.nodes.append(make_node(
-                "Reshape",
-                reshape_name,
-                inputs=[self.oname, shape_name],
-                outputs=[reshape_name],
-            ))
+        shape_name = self.next_name("shape")
+        shape_tensor = np.array(shape, dtype=np.int64)
+        self.nodes.append(make_constant_node(shape_name, shape_tensor))
+        self.nodes.append(make_node(
+            "Reshape",
+            inputs=[self.oname, shape_name],
+            outputs=[reshape_name],
+        ))
         self.oname = reshape_name
         self.oshape = oshape
         return self
@@ -464,7 +598,6 @@ class Transform:
         transpose_name = self.next_name("transpose")
         self.nodes.append(make_node(
             "Transpose",
-            transpose_name,
             inputs=[self.oname],
             outputs=[transpose_name],
             perm=perm,
@@ -480,7 +613,6 @@ class Transform:
         matmul_name = self.next_name("matmul")
         self.nodes.append(make_node(
             "MatMul",
-            matmul_name,
             inputs=[self.oname, arg.oname],
             outputs=[matmul_name],
         ))
@@ -492,17 +624,15 @@ class Transform:
         if len(axes) == 0:
             return self
         sum_name = self.next_name("sum")
-        if True:
-            axes_tensor = np.array(axes, dtype=np.int64)
-            axes_name = self.next_name("axes")
-            self.nodes.append(make_constant_node(axes_name, axes_tensor))
-            self.nodes.append(make_node(
-                "ReduceSum",
-                sum_name,
-                inputs=[self.oname, axes_name],
-                outputs=[sum_name],
-                keepdims=0,
-            ))
+        axes_name = self.next_name("axes")
+        axes_tensor = np.array(axes, dtype=np.int64)
+        self.nodes.append(make_constant_node(axes_name, axes_tensor))
+        self.nodes.append(make_node(
+            "ReduceSum",
+            inputs=[self.oname, axes_name],
+            outputs=[sum_name],
+            keepdims=0,
+        ))
         self.oname = sum_name
         self.oshape = reduce_shape(self.oshape, axes)
         return self
@@ -519,18 +649,16 @@ class Transform:
         self.ishapes += arg.ishapes
         self.nodes += arg.nodes
         mul_name = self.next_name("mul")
-        if True:
-            self.nodes.append(make_node(
-                "Mul",
-                mul_name,
-                inputs=[self.oname, arg.oname],
-                outputs=[mul_name],
-            ))
+        self.nodes.append(make_node(
+            "Mul",
+            inputs=[self.oname, arg.oname],
+            outputs=[mul_name],
+        ))
         self.oname = mul_name
         self.oshape = mul_shape
         return self
 
-def einsum_squeeze_input(spec: einsum_parser.EinsumSpec, transforms: List[Transform], i):
+def einsum_squeeze_input(spec: EinsumSpec, transforms: List[Transform], i):
     ispec = spec.inputs[i]
     idxs = list(ispec.idxs)
     shape = list(ispec.shape)
@@ -542,9 +670,8 @@ def einsum_squeeze_input(spec: einsum_parser.EinsumSpec, transforms: List[Transf
     assert tuple(shape) == tuple(transforms[i].oshape)
     ispec.idxs = idxs
     ispec.shape = tuple(shape)
-    return spec, transforms
 
-def einsum_diagonalize_input(spec: einsum_parser.EinsumSpec, transforms: List[Transform], i):
+def einsum_diagonalize_input(spec: EinsumSpec, transforms: List[Transform], i):
     ispec = spec.inputs[i]
     idxs = list(ispec.idxs)
     shape = list(ispec.shape)
@@ -558,9 +685,8 @@ def einsum_diagonalize_input(spec: einsum_parser.EinsumSpec, transforms: List[Tr
             assert tuple(shape) == tuple(transforms[i].oshape)
     ispec.idxs = idxs
     ispec.shape = tuple(shape)
-    return spec, transforms
 
-def einsum_reducesum_input(spec: einsum_parser.EinsumSpec, transforms: List[Transform], i):
+def einsum_reducesum_input(spec: EinsumSpec, transforms: List[Transform], i):
     ispec = spec.inputs[i]
     idxs = list(ispec.idxs)
     shape = list(ispec.shape)
@@ -576,26 +702,46 @@ def einsum_reducesum_input(spec: einsum_parser.EinsumSpec, transforms: List[Tran
     assert tuple(shape) == tuple(transforms[i].oshape)
     ispec.idxs = idxs
     ispec.shape = tuple(shape)
-    return spec, transforms
 
-def einsum_transpose_input(spec: einsum_parser.EinsumSpec, transforms: List[Transform], i, idxs_transposed):
+def einsum_transpose_input(spec: EinsumSpec, transforms: List[Transform], i, idxs_transposed):
     ispec = spec.inputs[i]
     perm = transpose_perm(ispec.idxs, idxs_transposed)
     transforms[i].transpose(perm)
     ispec.idxs = idxs_transposed
     ispec.shape = transpose_seq(ispec.shape, perm)
     assert transforms[i].oshape == ispec.shape
-    return spec, transforms
 
-def einsum_contract_inputs(spec: einsum_parser.EinsumSpec, transforms: List[Transform], i, j):
+def einsum_contract_inputs(spec: EinsumSpec, transforms: List[Transform], i, j):
     i_ispec = spec.inputs[i]
     j_ispec = spec.inputs[j]
-    ij_idxs = set(i_ispec.idxs) & set(j_ispec.idxs)
-    idxs_in_other_inputs = {
-        idx for ispec in omit(spec.inputs, i, j) for idx in ispec.idxs
-    }
-    idxs2keep = idxs_in_other_inputs.union(spec.output.idxs)
-    idxs2reduce = ij_idxs.difference(idxs2keep)
+    i_idxs = set(i_ispec.idxs)
+    j_idxs = set(j_ispec.idxs)
+    ij_idxs = i_idxs.intersection(j_idxs)
+    if True:
+        idxs_in_other_inputs = {
+            idx for ispec in omit(spec.inputs, i, j) for idx in ispec.idxs
+        }
+        idxs2keep = idxs_in_other_inputs.union(spec.output.idxs)
+        idxs2reduce = ij_idxs.difference(idxs2keep)
+    elif False:
+        idxs2keep = set(spec.output.idxs)
+        for pos, ispec in enumerate(spec.inputs):
+            if pos != i and pos != j:
+                for idx in ispec.idxs:
+                    idxs2keep.add(idx)
+        idxs2reduce = ij_idxs.difference(idxs2keep)
+    elif True:
+        # idxs2reduce = set(ij_idxs)
+        idxs2reduce = [idx for idx in i_ispec.idxs + j_ispec.idxs if idx in i_ispec.idxs and idx in j_ispec.idxs]
+        for idx in spec.output.idxs:
+            while idx in idxs2reduce:
+                idxs2reduce.remove(idx)
+        for pos, ispec in enumerate(spec.inputs):
+            if pos != i and pos != j:
+                for idx in ispec.idxs:
+                    while idx in idxs2reduce:
+                        idxs2reduce.remove(idx)
+        idxs2reduce = set(idxs2reduce)
     if len(idxs2reduce) == 0:
         return einsum_mul_inputs(spec, transforms, i, j)
     else:
@@ -603,11 +749,11 @@ def einsum_contract_inputs(spec: einsum_parser.EinsumSpec, transforms: List[Tran
 
 # matmul is an optimization of mul followed by reducesum:
 # def einsum_matmul_inputs(spec, transforms, idxs2reduce, i, j):
-#   spec, transforms = einsum_mul_inputs(spec, transforms, i, j)
+#   einsum_mul_inputs(spec, transforms, i, j)
 #   i -= j < i # j's removal may shift i one position to the left
 #   return einsum_reducesum_input(spec, transforms, i)
 #
-def einsum_matmul_inputs(spec: einsum_parser.EinsumSpec, transforms: List[Transform], idxs2reduce, i, j):
+def einsum_matmul_inputs(spec: EinsumSpec, transforms: List[Transform], idxs2reduce, i, j):
     # We assume that each of i and j have no repeated or reducible indexes.
     # (Any repeated or reducible indexes in each input were removed in
     # einsum_diagonalize_input() and einsum_reducesum_input() up front
@@ -636,9 +782,9 @@ def einsum_matmul_inputs(spec: einsum_parser.EinsumSpec, transforms: List[Transf
     j_idxs_unshared = [idx for idx in j_idxs if idx not in ij_idxs]
 
     i_idxs_transposed = ij_keep_idxs + i_idxs_unshared + ij_reduce_idxs
-    spec, transforms = einsum_transpose_input(spec, transforms, i, i_idxs_transposed)
+    einsum_transpose_input(spec, transforms, i, i_idxs_transposed)
     j_idxs_transposed = ij_keep_idxs + ij_reduce_idxs + j_idxs_unshared
-    spec, transforms = einsum_transpose_input(spec, transforms, j, j_idxs_transposed)
+    einsum_transpose_input(spec, transforms, j, j_idxs_transposed)
     i_ispec = spec.inputs[i]
     j_ispec = spec.inputs[j]
 
@@ -663,9 +809,8 @@ def einsum_matmul_inputs(spec: einsum_parser.EinsumSpec, transforms: List[Transf
     assert len(i_ispec.idxs) == len(i_ispec.shape), f"{i_ispec}"
     del transforms[j]
     del spec.inputs[j]
-    return spec, transforms
 
-def einsum_mul_inputs(spec: einsum_parser.EinsumSpec, transforms: List[Transform], i, j):
+def einsum_mul_inputs(spec: EinsumSpec, transforms: List[Transform], i, j):
     i_ispec = spec.inputs[i]
     j_ispec = spec.inputs[j]
     i_idxs = i_ispec.idxs
@@ -676,7 +821,7 @@ def einsum_mul_inputs(spec: einsum_parser.EinsumSpec, transforms: List[Transform
     j_idxs_unshared = [idx for idx in j_idxs if idx not in ij_idxs]
     j_idxs_shared = [idx for idx in i_idxs if idx in ij_idxs]
     j_idxs_transposed = j_idxs_unshared + j_idxs_shared
-    spec, transforms = einsum_transpose_input(spec, transforms, j, j_idxs_transposed)
+    einsum_transpose_input(spec, transforms, j, j_idxs_transposed)
     j_ispec = spec.inputs[j]
 
     # unsqueeze j so ends with all i's idxs, in the same order
@@ -696,9 +841,8 @@ def einsum_mul_inputs(spec: einsum_parser.EinsumSpec, transforms: List[Transform
     assert len(i_ispec.shape) == len(j_idxs_unsqueezed)
     del transforms[j]
     del spec.inputs[j]
-    return spec, transforms
 
-def einsum_finalize(spec: einsum_parser.EinsumSpec, transform: Transform):
+def einsum_finalize(spec: EinsumSpec, transform: Transform):
     assert len(spec.inputs) == 1
     ispec = spec.inputs[0]
     in_idxs = set(ispec.idxs)
@@ -717,8 +861,8 @@ def einsum_finalize(spec: einsum_parser.EinsumSpec, transform: Transform):
 def make_identity_transform(dtype, shape, iname):
     return Transform([iname], [shape], dtype, iname, shape, [])
 
-def einsum_decomposed_model(equation, ishapes, dtype):
-    spec = einsum_parser.einsum_spec(equation, ishapes)
+def einsum_decomposed_model(equation, ishapes, dtype) -> Tuple[Model, Shape]:
+    spec = einsum_spec(equation, ishapes)
 
     # In two cases the output is just zeros or empty:
     # (1) empty if there are any 0 dims in the output shape,
@@ -745,38 +889,40 @@ def einsum_decomposed_model(equation, ishapes, dtype):
         # squeezing avoids broadcasting in contractions amd it can potentially
         # be an optimization to skip some diagonalizations and reducesums and
         # axes to juggle in contractions
-        spec, transforms = einsum_squeeze_input(spec, transforms, i)
-        spec, transforms = einsum_diagonalize_input(spec, transforms, i)
+        einsum_squeeze_input(spec, transforms, i)
+        einsum_diagonalize_input(spec, transforms, i)
 
     # einsum_squeeze_input() must be done on all inputs before
     # einsum_reducesum_input() on any input, because a squeeze of
     # a later input can enable reducesum of an earlier input
     for i in range(ninputs):
-        spec, transforms = einsum_reducesum_input(spec, transforms, i)
+        einsum_reducesum_input(spec, transforms, i)
 
     # TODO: optimize the contraction order
     while len(transforms) > 1:
-        spec, transforms = einsum_contract_inputs(spec, transforms, 0, 1)
+        einsum_contract_inputs(spec, transforms, 0, 1)
 
     transform = einsum_finalize(spec, transforms[0])
     return transform.model(f"einsum({equation})"), tuple(transform.oshape)
 
-
+# def einsum(equation: str, *tensors: np.ndarray) -> np.ndarray:
+#     ishapes = [np.shape(tensor) for tensor in tensors]
+#     spec = einsum_spec(equation, ishapes)
+#     return einsum_parser.einsum_execute(spec, list(tensors))
 
 def einsum(equation: str, *tensors: np.ndarray) -> np.ndarray:
+    tensors = [np.asanyarray(tensor) for tensor in tensors]
     ishapes = [np.shape(tensor) for tensor in tensors]
-    spec = einsum_parser.einsum_spec(equation, ishapes)
-    return einsum_parser.einsum_execute(spec, list(tensors))
+    dtype = np.result_type(*(tensor.dtype for tensor in tensors))
+    model, oshape = einsum_decomposed_model(equation, ishapes, dtype)
+    result = model.run(tensors)
+    assert np.shape(result) == tuple(oshape)
+    return result
 
 def einsum_model(equation: str, ishapes: Shape, dtype=np.float64):
-    model, oshape = einsum_decomposed_model(equation, ishapes, dtype)
-    return model, oshape
-    # ishapes = [np.shape(tensor) for tensor in tensors]
-    # spec = einsum_parser.einsum_spec(equation, ishapes)
-    # return einsum_parser.einsum_execute(spec, list(tensors))
+    return einsum_decomposed_model(equation, ishapes, dtype)
 
 def einsum_model_test():
-    import npnd
     for equation, ishapes in [
             ("ii->i", [(0,0)]),
             ("ii", [(0,0)]),
@@ -792,11 +938,17 @@ def einsum_model_test():
             ("sitju->ij", [(1,2,1,3,1)]),
             # diagonalize axes s,t:
             ("ss->s", [(2,2)]),
+            ("ss", [(2,2)]),
+            ("ssuu->su", [(2,2,1,1)]),
             ("ssuu->su", [(2,2,3,3)]),
+            ("ssuu", [(2,2,3,3)]),
             ("sss->s", [(2,2,2)]),
+            ("sss", [(2,2,2)]),
             ("iss->is", [(3,2,2)]),
+            ("iss", [(3,2,2)]),
             ("sis->is", [(2,3,2)]),
             ("ssi->si", [(2,2,3)]),
+            ("sis->s", [(1,3,1)]),
             # reducesum axes s,t,u:
             ("sij->ij", [(4,2,3)]),
             ("isj->ij", [(2,4,3)]),
@@ -815,7 +967,6 @@ def einsum_model_test():
             ("ij->ji", [(1,2)]),
             ("ij", [(1,1)]),
             ("ij->ji", [(1,1)]),
-            ("ghijk,ghjkm->ghim", [(1,5,2,1,3),(6,1,3,1,4)]),
             # matmul:
             ("ij,j", [(2,3),(3,)]),
             ("i,i", [(2,),(2,)]),
@@ -826,15 +977,23 @@ def einsum_model_test():
             ("ghijk,ghjkm", [(6,5,2,3,3),(6,5,3,3,4)]),
             ("ghijk,ghjkm,gh", [(6,5,2,3,3),(6,5,3,3,4),(6,5)]),
             ("ghijk,ghjkm->ghim", [(6,5,2,3,3),(6,5,3,3,4)]),
+            ("ghijk,ghjkm->ghim", [(1,5,2,1,3),(6,1,3,1,4)]),
             # outer:
             ("i,j->ij", [(3,), (4,)]),
             ("i,j->i", [(3,), (4,)]),
             ("i,j->j", [(3,), (4,)]),
             ("i,j->", [(3,), (4,)]),
+            # matmul with broadcast on reduction axes
+            ("a,a", [(1,),(2,)]),
+            ("ab,ab", [(1,3),(2,1)]),
+            ("...ab,...ab", [(1,1,3),(4,2,1)]),
+            ("abxy,abxz->xyz", [(1,3,4,5),(2,1,1,6)]),
         ]:
-        model, oshape = einsum_model(equation, ishapes)
-        values = [npnd.values(shape) for shape in ishapes]
+        spec = einsum_spec(equation, ishapes)
+        values = [np.random.random(shape) for shape in ishapes]
         expected = np.einsum(equation, *values)
-        result = model.run(*values)
+        result = einsum(equation, *values)
         assert np.allclose(expected, result)
-        assert tuple(oshape) == np.shape(expected)
+        print("")
+        print("  ", equation, ishapes, np.shape(result))
+        assert tuple(spec.output.shape) == np.shape(result)

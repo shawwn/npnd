@@ -1,28 +1,20 @@
 import numpy as np
 
-from npnd import gather_nd
+from npnd import gather_nd_lib
 import npnd.test_util as ntu
 import npnd.numpy as nnp
 import functools
-import inspect
-
-# reference implementation of gather_nd.
-def gather_nd_ref(params, indices, batch_dims=0):
-  assert batch_dims == 0
-  params = np.asarray(params)
-  indices = np.asarray(indices)
-  return params[tuple(indices.T)]
 
 # verify gathernd matches reference implementation.
 def check_gather_nd(params, indices, batch_dims=0, output=None, output_shape=None, desc=None):
-  y = gather_nd(params, indices, batch_dims=batch_dims)
+  y = gather_nd_lib.gather_nd(params, indices, batch_dims=batch_dims)
   if output_shape is not None:
     x = np.asarray(output_shape)
     y = np.asarray(y.shape)
   elif output is not None:
     x = np.asarray(output)
   else:
-    x = gather_nd_ref(params, indices, batch_dims=batch_dims)
+    x = gather_nd_lib.gather_nd_ref(params, indices, batch_dims=batch_dims)
   ntu.check_eq(x, y)
   return y
 

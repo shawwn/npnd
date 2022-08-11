@@ -399,3 +399,12 @@ enable_x64 = config.define_bool_state(
 config._contextmanager_flags.remove("npnd_enable_x64")
 
 Config.x64_enabled = Config.npnd_enable_x64  # type: ignore
+
+
+# TODO(mattjj): remove this flag when we ensure we only succeed at trace-staging
+# if the intended backend can handle lowering the result
+config.define_bool_state(
+    name='npnd_dynamic_shapes',
+    default=False,
+    help=('Enables experimental features for staging out computations with '
+          'dynamic shapes.'))

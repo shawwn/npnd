@@ -1,49 +1,60 @@
 import numpy as np
 
 import npnd
-from npnd import scatter_nd
-from npnd import scatter
 import npnd.test_util as ntu
 import npnd.numpy as nnp
 import functools
 import inspect
-
-# reference implementation of scatter_nd.
-
-def scatter_nd_ref(original, indices, values, reduction=None):
-  assert reduction in [None, 'add', 'mul'], "Unknown reduction type"
-  original = np.asarray(original).astype(float)
-  indices = np.asarray(indices).astype(np.int64)
-  values = np.asarray(values).astype(float)
-  output = np.copy(original)
-  update_indices = indices.shape[:-1]
-  for idx in np.ndindex(update_indices):
-    if reduction is None:
-      output[tuple(indices[idx])] = values[idx]
-    elif reduction == 'add':
-      output[tuple(indices[idx])] += values[idx]
-    elif reduction == 'mul':
-      output[tuple(indices[idx])] *= values[idx]
-  return output
+try:
+  import torch
+except ImportError:
+  torch = None
 
 # verify scatternd matches reference implementation.
 def check_scatter_nd(params, indices, updates, reduction=None, output=None, output_shape=None, desc=None, debug=False):
+  params = np.asarray(params).astype(float)
+  indices = np.asarray(indices).astype(np.int64)
+  updates = np.asarray(updates).astype(float)
   if debug:
     breakpoint()
-  y = scatter_nd(params, indices, updates, reduction=reduction)
+  x = npnd.scatter_nd_ref(params, indices, updates, reduction=reduction)
+  y = npnd.scatter_nd(params, indices, updates, reduction=reduction)
   if output_shape is not None:
     x = np.asarray(output_shape)
     y = np.asarray(y.shape)
   elif output is not None:
     x = np.asarray(output)
-  else:
-    x = scatter_nd_ref(params, indices, updates, reduction=reduction)
+  ntu.check_eq(x, y)
+  return y
+
+# verify scatter matches reference implementation.
+def check_scatter(params, indices, updates, axis=0, reduction=None, output=None, output_shape=None, desc=None, debug=False):
+  params = np.asarray(params).astype(float)
+  indices = np.asarray(indices).astype(np.int64)
+  updates = np.asarray(updates).astype(float)
+  if debug:
+    breakpoint()
+  x = npnd.scatter_ref(params, indices, updates, axis=axis, reduction=reduction)
+  y = npnd.scatter(params, indices, updates, axis=axis, reduction=reduction)
+  if output_shape is not None:
+    x = np.asarray(output_shape)
+    y = np.asarray(y.shape)
+  elif output is not None:
+    x = np.asarray(output)
   ntu.check_eq(x, y)
   return y
 
 
 # The below Scatter's numpy implementation is from https://stackoverflow.com/a/46204790/11767360
 def scatter_ref(data, indices, updates, axis=0, reduction=None):  # type: ignore
+    if torch is not None:
+      options = dict(reduce=reduction) if reduction is not None else dict()
+      if options.get('reduce') == 'mul':
+        options['reduce'] = 'multiply'
+      data = torch.tensor(data).float()
+      indices = torch.tensor(indices).long()
+      updates = torch.tensor(updates).float()
+      return data.scatter(axis, indices, updates, **options)
     if axis < 0:
         axis = data.ndim + axis
 
@@ -140,25 +151,6 @@ def scatter_elements_ref(data, indices, updates, axis=0, reduction='none'):  # t
                 scattered[idx_set] *= updates[updates_idx[iter]]
     return scattered
 
-
-# verify scatter matches reference implementation.
-def check_scatter(params, indices, updates, axis=0, reduction=None, output=None, output_shape=None, desc=None, debug=False):
-  params = np.asarray(params).astype(float)
-  indices = np.asarray(indices).astype(np.int64)
-  updates = np.asarray(updates).astype(float)
-  if debug:
-    breakpoint()
-  y = scatter(params, indices, updates, axis=axis, reduction=reduction)
-  if output_shape is not None:
-    x = np.asarray(output_shape)
-    y = np.asarray(y.shape)
-  elif output is not None:
-    x = np.asarray(output)
-  else:
-    x = scatter_ref(params, indices, updates, axis=axis, reduction=reduction)
-    # x = scatter_elements_ref(params, indices, updates, axis=axis, reduction=reduction)
-  ntu.check_eq(x, y)
-  return y
 
 def scatter_name_func(testcase_func, param_num, param):
   kwargs = dict(param.kwargs)
@@ -292,7 +284,8 @@ class ScatterNdTestCase(ntu.TestCase):
         desc = "tensor_scatter_nd_update More slice update examples #1",
         params = nnp.values((13,11,7,5,3)),
         indices = [[0],[1]],
-        updates = nnp.values((2, 11,7,5,3)),
+        # updates = nnp.values((2, 11,7,5,3)),
+        updates = nnp.ones((2, 11,7,5,3)),
         reduction = reduction,
       ) for reduction in [None, 'add', 'mul']
     ],
@@ -336,7 +329,8 @@ class ScatterNdTestCase(ntu.TestCase):
     batch_size, time, width, height, channels = 13,11,7,5,3
     video_batch = nnp.values([batch_size, time, width, height, channels])
     indices = [[0],[1]]
-    new_clips = nnp.values([2, time, width, height, channels])
+    # new_clips = nnp.values([2, time, width, height, channels])
+    new_clips = nnp.ones([2, time, width, height, channels])
     for reduction in [None, 'add', 'mul']:
       check_scatter_nd(video_batch, indices, new_clips, reduction=reduction)
     indices = [[0, 0], [1, 0], [2, 0]] # num_updates=3, index_depth=2
@@ -348,18 +342,6 @@ class ScatterNdTestCase(ntu.TestCase):
 
   def test_scatter_nd_3(self):
     tensor = nnp.values((5,5))
-    # indices = [
-    #   [[0,0],
-    #    [1,1],
-    #    [2,2],
-    #    [3,3],
-    #    [4,4]],
-    #   [[0,4],
-    #    [1,3],
-    #    [2,2],
-    #    [3,1],
-    #    [4,0]],
-    # ]
     indices = [
       [[0,0],
        [1,1],
@@ -399,6 +381,49 @@ class ScatterTestCase(ntu.TestCase):
   @scatter_test_case([
     *[
       ntu.param(
+        desc = "ONNX ScatterElements",
+        # params = nnp.values((3,3,)),
+        params = np.ones((3,3,)),
+        indices = [
+          [1, 0, 2],
+          # [0, 2, 1],
+        ],
+        updates = [
+          [3.0, 0.0, 3.2],
+          # [2.0, 2.1, 2.2],
+        ],
+        # output = [
+        #   [2.0, 1.1, 0.0],
+        #   [1.0, 0.0, 2.2],
+        #   [0.0, 2.1, 1.2],
+        # ],
+        reduction = reduction
+      ) for reduction in [None, 'add', 'mul', 'min', 'max']
+    ],
+    *[
+      ntu.param(
+        desc = "ONNX ScatterElements",
+        params = nnp.values((3,3,)) + 1,
+        # params = np.ones((3,3,)),
+        indices = [
+          [1, 0, 2],
+          # [0, 2, 1],
+        ],
+        updates = [
+          [3.0, 0.0, 3.2],
+          # [2.0, 2.1, 2.2],
+        ],
+        # output = [
+        #   [2.0, 1.1, 0.0],
+        #   [1.0, 0.0, 2.2],
+        #   [0.0, 2.1, 1.2],
+        # ],
+        axis=axis,
+        reduction = reduction,
+      ) for reduction in [None, 'add', 'mul', 'min', 'max'] for axis in [0, 1]
+    ],
+    *[
+      ntu.param(
         desc = "ONNX ScatterElements example 1",
         params = nnp.values((3,3,)),
         indices = [
@@ -415,23 +440,19 @@ class ScatterTestCase(ntu.TestCase):
         #   [0.0, 2.1, 1.2],
         # ],
         reduction = reduction
-      ) for reduction in [None, 'add', 'mul']
+      ) for reduction in [None, 'add', 'mul', 'min', 'max']
     ],
-    *[
-      ntu.param(
-        desc = "ONNX ScatterElements example 2",
-        params = nnp.values((1,5,)),
-        indices = [[1, 3]],
-        updates = [[1.1, 2.1]],
-        axis = 1,
-        # output = [
-        #   [2.0, 1.1, 0.0],
-        #   [1.0, 0.0, 2.2],
-        #   [0.0, 2.1, 1.2],
-        # ],
-        reduction = reduction
-      ) for reduction in [None, 'add', 'mul']
-    ],
+    # *[
+    #   ntu.param(
+    #     desc = "ONNX ScatterElements example 2",
+    #     params = nnp.values((1,5,)),
+    #     indices = [[1, 3], [2, 4]],
+    #     updates = [[1.1, 2.1], [5.1, 6.1]],
+    #     axis = 1,
+    #     # output = [[1.0, 1.1, 3.0, 2.1, 5.0]],
+    #     reduction = reduction
+    #   ) for reduction in [None, 'add', 'mul']
+    # ],
     *[
       ntu.param(
         desc = "ONNX scatter_elements_with_axis",
@@ -439,9 +460,9 @@ class ScatterTestCase(ntu.TestCase):
         indices = np.array([[1, 3]], dtype=np.int64),
         updates = np.array([[1.1, 2.1]], dtype=np.float32),
         axis = 1,
-        output = [[1.0, 1.1, 3.0, 2.1, 5.0]],
+        # output = [[1.0, 1.1, 3.0, 2.1, 5.0]],
         reduction = reduction,
-      ) for reduction in [None]
+      ) for reduction in [None, 'add', 'mul', 'min', 'max']
     ],
     *[
       ntu.param(
@@ -450,10 +471,11 @@ class ScatterTestCase(ntu.TestCase):
         indices = np.array([[1, 1]], dtype=np.int64),
         updates = np.array([[1.1, 2.1]], dtype=np.float32),
         axis = 1,
-        output = [[1., 5.2, 3., 4., 5.]] if reduction == 'add' else [[1., 6.4, 3., 4., 5.]],
+        # output = [[1., 5.2, 3., 4., 5.]] if reduction == 'add' else [[1., 6.4, 3., 4., 5.]],
         reduction = reduction,
         # debug=True,
-      ) for reduction in ['add', 'mul']
+      # ) for reduction in ['add', 'mul']
+      ) for reduction in [None, 'add', 'mul', 'min', 'max']
     ],
     *[
       ntu.param(
@@ -462,27 +484,27 @@ class ScatterTestCase(ntu.TestCase):
         indices = np.array([[1, -3]], dtype=np.int64),
         updates = np.array([[1.1, 2.1]], dtype=np.float32),
         axis = 1,
-        output =
-        [[1.0, 1.1, 2.1, 4.0, 5.0]] if reduction is None else
-        [[1.0, 3.1, 5.1, 4.0, 5.0]] if reduction == 'add' else
-        [[1.0, 2.2, 6.3, 4.0, 5.0]],
+        # output =
+        # [[1.0, 1.1, 2.1, 4.0, 5.0]] if reduction is None else
+        # [[1.0, 3.1, 5.1, 4.0, 5.0]] if reduction == 'add' else
+        # [[1.0, 2.2, 6.3, 4.0, 5.0]],
         reduction = reduction,
-      ) for reduction in [None, 'add', 'mul']
+      ) for reduction in [None, 'add', 'mul', 'min', 'max']
     ],
     *[
       ntu.param(
         desc = "ONNX scatter_elements_without_axis",
-        params = np.zeros((3,3), dtype=np.float32),
+        params = nnp.values((3,3)) + 1,
         indices = np.array([[1, 0, 2], [0, 2, 1]], dtype=np.int64),
         updates = np.array([[1.0, 1.1, 1.2], [2.0, 2.1, 2.2]], dtype=np.float32),
-        output =
-        [
-          [2.0, 1.1, 0.0],
-          [1.0, 0.0, 2.2],
-          [0.0, 2.1, 1.2],
-        ],
+        # output =
+        # [
+        #   [2.0, 1.1, 0.0],
+        #   [1.0, 0.0, 2.2],
+        #   [0.0, 2.1, 1.2],
+        # ],
         reduction = reduction,
-      ) for reduction in [None]
+      ) for reduction in [None, 'add', 'mul', 'min', 'max']
     ],
     # *[
     #   ntu.param(
@@ -516,6 +538,26 @@ class ScatterTestCase(ntu.TestCase):
     #     reduction = reduction
     #   ) for reduction in [None, 'add', 'mul']
     # ],
+    *[
+      ntu.param(
+        desc = "ONNX ScatterElements example 1 with zeros",
+        params = nnp.values((3,3,)) + 1,
+        indices = [
+          [1, 0, 2],
+          [0, 2, 1],
+        ],
+        updates = [
+          [1.0, 0.0, 1.2],
+          [2.0, 2.1, 2.2],
+        ],
+        # output = [
+        #   [2.0, 1.1, 0.0],
+        #   [1.0, 0.0, 2.2],
+        #   [0.0, 2.1, 1.2],
+        # ],
+        reduction = reduction
+      ) for reduction in [None, 'add', 'mul', 'min', 'max']
+    ],
   ])
   def test_scatter(self, *args, **kws):
     check_scatter(*args, **kws)
