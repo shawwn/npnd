@@ -4,7 +4,7 @@ import numpy as np
 import math
 from typing import Literal, Sequence, List, Tuple
 
-from . import broadcast
+from . import broadcast as broadcast_lib
 
 Shape = Sequence[int]
 
@@ -62,14 +62,16 @@ def meshgrid_shapes(*xi, indexing: Literal["xy", "ij"] = 'xy') -> List[np.ndarra
   #   output[1].shape = (-1, 1) + s0[2:]
   # return output
 
-def meshgrid(*xi, indexing: Literal["xy", "ij"] = 'xy') -> List[np.ndarray]:
+def meshgrid(*xi, indexing: Literal["xy", "ij"] = 'xy', broadcast=True) -> List[np.ndarray]:
   axes = meshgrid_axes(xi, indexing=indexing)
-  output = broadcast.broadcast_arrays(*axes, subok=True)
+  if not broadcast:
+    return axes
+  output = broadcast_lib.broadcast_arrays(*axes, subok=True)
   return output
 
-def ndshape(shape: Shape, dtype=None) -> List[np.ndarray]:
+def ndshape(shape: Shape, dtype=None, broadcast=True) -> List[np.ndarray]:
   #return meshgrid(*[np.arange(i, dtype=dtype) for i in shape], indexing='ij')
-  return meshgrid(*[as_range(dim, dtype=dtype) for dim in shape], indexing='ij')
+  return meshgrid(*[as_range(dim, dtype=dtype) for dim in shape], indexing='ij', broadcast=broadcast)
 
 def ndcoords(shape: Shape, dtype=None) -> np.ndarray:
   return np.stack(ndshape(shape, dtype=dtype), -1)

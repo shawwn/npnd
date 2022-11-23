@@ -561,3 +561,6 @@ class ScatterTestCase(ntu.TestCase):
   ])
   def test_scatter(self, *args, **kws):
     check_scatter(*args, **kws)
+
+if __name__ == '__main__':
+  ntu.main()

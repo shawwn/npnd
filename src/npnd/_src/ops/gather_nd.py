@@ -3,10 +3,13 @@ from npnd import errors
 from . import one_hot as one_hot_lib
 from . import shape as shape_lib
 import math
-from typing import List
+from typing import List, Tuple
+import dataclasses
 
 def prn(*args, **kws):
   print(*args, **kws)
+  if args:
+    return args[-1]
 
 # reference implementation of ONNX GatherElements.
 def gather_elements_ref(tensor, indices, axis=0) -> np.ndarray:
@@ -21,6 +24,7 @@ def gather_elements_ref(tensor, indices, axis=0) -> np.ndarray:
   return out
 
 def gather_elements(tensor, indices, axis=0) -> np.ndarray:
+  dtype = np.asarray(tensor).dtype
   tensor = np.asarray(tensor).astype(float)
   indices = np.asarray(indices).astype(int)
   hot = one_hot_lib.one_hot(indices, tensor.shape[axis], dtype=tensor.dtype, axis=axis + 1)
@@ -39,6 +43,7 @@ def gather_elements(tensor, indices, axis=0) -> np.ndarray:
   print('out after multiply\n', out.shape, '\n', out)
   # sum along the one-hot axis.
   out = np.sum(out, axis=axis + 1)
+  out = out.astype(dtype)
   return out
 
 # Python implementation of ONNX GatherElements
@@ -842,6 +847,57 @@ def gather_nd_ref(params, indices, batch_dims=0) -> np.ndarray:
   indices = np.asarray(indices)
   return params[tuple(indices.T)]
 
+def gather_nd_info(params, indices, batch_dims=0):
+  params = np.asarray(params)
+  indices = np.asarray(indices)
+  # Calculate the number of dimensions in indices
+  slice_dim = indices.shape[-1]
+  if slice_dim > np.ndim(params):
+    return errors.invalid_argument(
+        "index innermost dimension length must be <= params rank; saw: ",
+        slice_dim, " vs. ", np.ndim(params))
+  outer_shape = indices.shape[:-1]
+  # prn("outer_shape == ", outer_shape)
+  inner_shape = params.shape[slice_dim:]
+  # prn("inner_shape == ", inner_shape)
+  result_shape = outer_shape + inner_shape
+
+  # Calculate the number of elements that make up each slice of the
+  # tensor.
+  slice_size = int(np.prod(inner_shape)) # 1 if inner_shape is empty
+  # prn("slice_size == ", slice_size)
+  # Calculate the number of slices we'll be selecting.
+  num_slices = int(np.prod(params.shape)) // slice_size
+  # prn("num_slices == ", num_slices)
+  # Reshape the incoming tensor into (num_slices, slice_size).
+  params_shape = (num_slices, slice_size)
+
+  # Calculate the 1-dimensional indices necessary to select
+  # the correct slices.
+  strides_shape = params_shape[:slice_dim]
+  # indices_mat = shape_lib.flat_nd_indices(indices, strides_shape)
+  #assert tuple(strides_shape) == tuple(indices.shape[:-1])
+
+  return GatherNdInfo(slice_dim,
+                      outer_shape,
+                      inner_shape,
+                      result_shape,
+                      slice_size,
+                      num_slices,
+                      params_shape,
+                      strides_shape)
+
+@dataclasses.dataclass
+class GatherNdInfo:
+  slice_dim: int
+  outer_shape: Tuple[int, ...]
+  inner_shape: Tuple[int, ...]
+  result_shape: Tuple[int, ...]
+  slice_size: int
+  num_slices: int
+  params_shape: Tuple[int, ...]
+  strides_shape: Tuple[int, ...]
+
 def gather_nd(params, indices, batch_dims=0) -> np.ndarray:
   params = np.asarray(params)
   indices = np.asarray(indices)
@@ -860,36 +916,36 @@ def gather_nd(params, indices, batch_dims=0) -> np.ndarray:
         "index innermost dimension length must be <= params rank; saw: ",
         slice_dim, " vs. ", np.ndim(params))
   outer_shape = indices.shape[:-1]
-  prn("outer_shape == ", outer_shape)
+  # prn("outer_shape == ", outer_shape)
   inner_shape = params.shape[slice_dim:]
-  prn("inner_shape == ", inner_shape)
+  # prn("inner_shape == ", inner_shape)
   result_shape = outer_shape + inner_shape
-  prn("result_shape == ", result_shape)
+  # prn("result_shape == ", result_shape)
   # Calculate the number of elements that make up each slice of the
   # tensor.
   slice_size = int(np.prod(inner_shape)) # 1 if inner_shape is empty
-  prn("slice_size == ", slice_size)
+  # prn("slice_size == ", slice_size)
   # Calculate the number of slices we'll be selecting.
   num_slices = int(np.prod(params.shape)) // slice_size
-  prn("num_slices == ", num_slices)
+  # prn("num_slices == ", num_slices)
   # Reshape the incoming tensor into (num_slices, slice_size).
   params_mat = params.reshape((num_slices, slice_size))
-  prn("params_mat.shape == ", params_mat.shape)
+  # prn("params_mat.shape == ", params_mat.shape)
   # Calculate the 1-dimensional indices necessary to select
   # the correct slices.
   strides_shape = params.shape[:slice_dim]
   # indices_mat = shape_lib.flat_nd_indices(indices, strides_shape)
   #assert tuple(strides_shape) == tuple(indices.shape[:-1])
   indices_mat = shape_lib.flat_nd_indices(indices, strides_shape)
-  prn("indices_mat.shape == ", indices_mat.shape)
+  # prn("indices_mat.shape == ", indices_mat.shape)
   # Select the slices we want, via onehot-matmul.
   hot = one_hot_lib.one_hot(indices_mat, num_slices)
-  prn("hot.shape == ", hot.shape)
+  # prn("hot.shape == ", hot.shape)
   result = hot @ params_mat
-  prn("result.shape == ", result.shape)
+  # prn("result.shape == ", result.shape)
   # Reshape the result back to the expected shape.
   out = result.reshape(result_shape)
-  prn("out.shape == ", out.shape)
+  # prn("out.shape == ", out.shape)
   # return out.astype(params.dtype)
   return out
 

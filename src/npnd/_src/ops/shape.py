@@ -85,7 +85,10 @@ def ndindex(shape: Shape):
 def ndcoords(shape: Shape):
   return np.asarray(list(ndindex(shape))).reshape(tuple(shape) + (len(shape),))
 
-def ndshape(indices_shape: Shape, dtype=None) -> List[np.ndarray]:
+def ndshape(indices_shape: Shape, dtype=None, broadcast=True) -> List[np.ndarray]:
+  return meshgrid_lib.meshgrid(*[np.arange(i, dtype=dtype) for i in indices_shape], indexing='ij', broadcast=broadcast)
+
+def ndaxis(indices_shape: Shape, axis: int, dtype=None) -> List[np.ndarray]:
   return meshgrid_lib.meshgrid(*[np.arange(i, dtype=dtype) for i in indices_shape], indexing='ij')
 
 def ndindices(indices, axis=None, shape=None) -> np.ndarray:
@@ -104,6 +107,13 @@ def iota(shape: Shape, iota_dimension: int, dtype=None):
 def unstack(a, axis = 0, keepdims=False) -> List[np.ndarray]:
   a = np.asarray(a)
   return [np.squeeze(e, axis) if not keepdims else e for e in np.split(a, a.shape[axis], axis = axis)]
+
+def stack(ls: Tuple[np.ndarray, ...], axis=0) -> np.ndarray:
+  ls2 = [np.expand_dims(l, axis=axis) for l in ls]
+  return concat(ls2, axis=axis)
+
+def concat(ls, axis=0):
+  return np.concatenate(ls, axis=axis)
 
 def extend(a, axis, count, reverse=False) -> np.ndarray:
   a = np.asarray(a)

@@ -19,6 +19,10 @@ libs.append(core)
 import npnd._src.config as config
 libs.append(config)
 
+import npnd._src.ops.trace as trace_lib
+libs.append(trace_lib)
+from npnd._src.ops.trace import trace
+
 import npnd._src.ops.values as values_lib
 libs.append(values_lib)
 from npnd._src.ops.values import (
@@ -28,7 +32,21 @@ from npnd._src.ops.values import (
   zeros_like,
   values,
   values_like,
+  randi,
 )
+
+import npnd._src.ops.prefix as prefix_lib
+libs.append(prefix_lib)
+from npnd._src.ops.prefix import (
+  Flattened,
+  flatten,
+)
+
+import npnd._src.ops.circuit as circuit_lib
+libs.append(circuit_lib)
+
+import npnd._src.ops.slice as slice_lib
+libs.append(slice_lib)
 
 import npnd._src.ops.one_hot as one_hot_lib
 libs.append(one_hot_lib)
@@ -36,6 +54,7 @@ from npnd._src.ops.one_hot import one_hot
 
 import npnd._src.ops.gather_nd as gather_nd_lib
 libs.append(gather_nd_lib)
+from npnd._src.ops.gather_nd import prn
 from npnd._src.ops.gather_nd import gather_elements_ref
 from npnd._src.ops.gather_nd import gather_nd
 from npnd._src.ops.gather_nd import gather
